@@ -283,12 +283,12 @@ class OkalaAdapter(BaseStoreAdapter):
         items_added = 0
 
         for m in mutations:
-            url = f"{self.base_url}/api/Cart/v1/Item"
+            url = f"{self.base_url}/api/Basket/v2/ShoppingCart/AddToShoppingCart"
             target_store = m.store_id if m.store_id and m.store_id != "unknown" else active_store_id
             payload = {
-                "productId": int(m.product_id) if m.product_id.isdigit() else m.product_id,
-                "storeId": int(target_store) if str(target_store).isdigit() else 2319,
-                "quantity": m.quantity,
+                "StoreId": int(target_store) if str(target_store).isdigit() else 2223,
+                "ProductId": int(m.product_id) if m.product_id.isdigit() else m.product_id,
+                "Quantity": m.quantity,
             }
             try:
                 resp = await self.client.post(url, json=payload, headers=headers)
