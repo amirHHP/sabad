@@ -3,7 +3,7 @@ Okala Live Platform Adapter (Ofoq Kourosh & Emin).
 Connects directly to live apigateway.okala.com endpoints.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import urllib.parse
 import httpx
 from sabad.adapters.base import BaseStoreAdapter
@@ -23,12 +23,13 @@ class OkalaAdapter(BaseStoreAdapter):
 
     def __init__(self, base_url: str = OKALA_BASE_URL):
         self.base_url = base_url.rstrip("/")
-        # Okala internal gateway uses specific headers
         self.client = httpx.AsyncClient(
             headers=OKALA_HEADERS,
             timeout=HTTP_TIMEOUT,
             verify=False  # Required for Iranian internal SSL root chain
         )
+        self._cached_store_id: Optional[str] = None
+        self._cached_store_title: Optional[str] = None
 
     @property
     def platform_name(self) -> str:
@@ -42,7 +43,69 @@ class OkalaAdapter(BaseStoreAdapter):
         return SessionManager.is_authenticated(self.platform_name)
 
     async def get_store_info(self, lat: float, lng: float) -> Optional[StoreInfo]:
-        """Resolves local Ofoq Kourosh store and delivery tiers."""
+        """Resolves local Ofoq Kourosh store dynamically and retrieves live MOV and delivery details."""
+        nearby_url = f"{self.base_url}/api/opex/v4/stores/nearby?latitude={lat}&longitude={lng}"
+        try:
+            resp = await self.client.get(nearby_url)
+            if resp.status_code == 200:
+                payload = resp.json()
+                stores = payload.get("data", {}).get("stores", [])
+                
+                # Prioritize Ofoq Kourosh branch, then any supermarket
+                selected_store = None
+                for s in stores:
+                    cat_name = s.get("storeCategoryName", "")
+                    partner_name = s.get("partnerName", "")
+                    if "افق کوروش" in cat_name or "افق کوروش" in partner_name:
+                        selected_store = s
+                        break
+                if not selected_store and stores:
+                    selected_store = stores[0]
+
+                if selected_store:
+                    store_id = str(selected_store.get("storeId"))
+                    store_name = selected_store.get("storeName") or "افق کوروش"
+                    self._cached_store_id = store_id
+                    self._cached_store_title = store_name
+
+                    # Fetch store details for live MOV and delivery rules
+                    details_url = (
+                        f"{self.base_url}/api/opex/v2/stores/details"
+                        f"?Latitude={lat}&longitude={lng}&StoreId={store_id}&customerSegments=0"
+                    )
+                    details_resp = await self.client.get(details_url)
+                    mov_tomans = DEFAULT_MOV_TOMANS["okala"]
+                    is_open = True
+                    delivery_fee = 25000.0
+
+                    if details_resp.status_code == 200:
+                        ddata = details_resp.json().get("data", {})
+                        min_order_rials = ddata.get("minimumOrder")
+                        if min_order_rials:
+                            mov_tomans = float(min_order_rials) / 10.0
+                        is_open = ddata.get("isActive", True) and ddata.get("isExist", True)
+                        
+                        raw_cost = ddata.get("cost")
+                        if raw_cost is not None and float(raw_cost) > 0:
+                            delivery_fee = float(raw_cost) / 10.0 if float(raw_cost) > 1000 else float(raw_cost)
+
+                    tiers = [
+                        DeliveryTier(min_subtotal=0, max_subtotal=400000, fee=delivery_fee),
+                        DeliveryTier(min_subtotal=400000, max_subtotal=None, fee=0),
+                    ]
+
+                    return StoreInfo(
+                        platform=self.platform_name,
+                        store_id=store_id,
+                        title=f"افق کوروش ({store_name})",
+                        is_open=is_open,
+                        minimum_order_value=mov_tomans,
+                        delivery_tiers=tiers
+                    )
+        except Exception as e:
+            print(f"Error resolving Okala nearby store: {e}")
+
+        # Fallback if connection fails
         return StoreInfo(
             platform=self.platform_name,
             store_id="2319",
@@ -55,10 +118,18 @@ class OkalaAdapter(BaseStoreAdapter):
             ]
         )
 
+    async def _ensure_store_id(self, lat: float, lng: float) -> str:
+        """Returns the active nearby store id for this location."""
+        if not self._cached_store_id:
+            info = await self.get_store_info(lat, lng)
+            if info:
+                self._cached_store_id = info.store_id
+        return self._cached_store_id or "2319"
+
     async def search(self, query: str, lat: float, lng: float) -> List[StoreItem]:
-        """Queries live Okala catalog."""
+        """Queries live Okala catalog for the dynamically resolved store branch."""
+        store_id = await self._ensure_store_id(lat, lng)
         encoded_q = urllib.parse.quote(query)
-        store_id = "2319"
         url = (
             f"{self.base_url}/api/Search/v1/Product/Search"
             f"?StoreIds={store_id}&SearchText={encoded_q}&HasQuantity=true&Page=1&Take=20&excludeShoppingCard=false"
@@ -72,7 +143,6 @@ class OkalaAdapter(BaseStoreAdapter):
                 entities = payload.get("entities", [])
                 
                 for e in entities:
-                    # Okala prices are in Rials -> convert to Tomans
                     price_rials = float(e.get("price", 0))
                     discount_pct = float(e.get("discountPercent", 0))
                     base_price_tomans = price_rials / 10.0
@@ -103,8 +173,8 @@ class OkalaAdapter(BaseStoreAdapter):
         return items
 
     async def get_flash_deals(self, lat: float, lng: float) -> List[StoreItem]:
-        """Fetches timed special discounts from Okala."""
-        store_id = "2319"
+        """Fetches timed special discounts from the resolved Okala store."""
+        store_id = await self._ensure_store_id(lat, lng)
         url = (
             f"{self.base_url}/api/Search/v1/Product/Search"
             f"?StoreIds={store_id}&HasDiscount=true&Page=1&Take=20&excludeShoppingCard=false"
@@ -139,13 +209,72 @@ class OkalaAdapter(BaseStoreAdapter):
 
         return deals
 
+    async def send_otp(self, phone: str) -> Dict[str, Any]:
+        """Sends OTP SMS code to the user's phone via Okala customer gateway."""
+        url = f"{self.base_url}/api/voyager/C/CustomerAccount/OTPRegister"
+        payload = {
+            "mobile": phone,
+            "deviceTypeCode": 0,
+            "confirmTerms": True,
+            "notRobot": False,
+            "otpType": 0,
+            "ValidationCodeCreateReason": 0,
+            "OtpApp": 0,
+            "IsAppOnly": False,
+            "AppVersion": "1.0.0"
+        }
+        try:
+            resp = await self.client.post(url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success", False):
+                    return {"success": True, "message": "کد تأیید با موفقیت ارسال شد."}
+                return {"success": False, "message": data.get("message") or "ارسال کد با خطا مواجه شد."}
+            return {"success": False, "message": f"خطای سرور: {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": f"خطا در ارتباط با سرور اکالا: {e}"}
+
+    async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> Dict[str, Any]:
+        """Exchanges Okala OTP code for Bearer and refresh tokens."""
+        url = f"{self.base_url}/api/v1/accounts/tokens"
+        form_data = {
+            "grant_type": "customer_grant_type",
+            "client_id": "customer_client_id",
+            "client_secret": "u_M{'57j!%LI21#",
+            "client_name": "customer_client_name",
+            "device_type_code": "0",
+            "scope": "offline_access",
+            "mobile_number": phone,
+            "otp_code": otp_code,
+        }
+        headers = {**OKALA_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
+        try:
+            resp = await self.client.post(url, data=form_data, headers=headers)
+            if resp.status_code == 200:
+                token_data = resp.json()
+                access_token = token_data.get("access_token")
+                refresh_token = token_data.get("refresh_token")
+                if access_token:
+                    SessionManager.save_tokens(
+                        self.platform_name,
+                        token=access_token,
+                        refresh_token=refresh_token,
+                        phone=phone,
+                        metadata=token_data
+                    )
+                    return {"success": True, "message": "احراز هویت با موفقیت انجام شد."}
+            return {"success": False, "message": "کد تأیید وارد شده نامعتبر یا منقضی شده است."}
+        except Exception as e:
+            return {"success": False, "message": f"خطا در تأیید کد اکالا: {e}"}
+
     async def add_to_cart(self, mutations: List[CartItemMutation]) -> CartMutationResult:
         """Executes authenticated add-to-cart against Okala."""
         token = SessionManager.get_token(self.platform_name)
+        active_store_id = self._cached_store_id or "2319"
         if not token:
             return CartMutationResult(
                 platform=self.platform_name,
-                store_id="2319",
+                store_id=active_store_id,
                 success=False,
                 error_message="نشست کاربری اکالا یافت نشد. لطفاً لاگین نمایید."
             )
@@ -155,9 +284,10 @@ class OkalaAdapter(BaseStoreAdapter):
 
         for m in mutations:
             url = f"{self.base_url}/api/Cart/v1/Item"
+            target_store = m.store_id if m.store_id and m.store_id != "unknown" else active_store_id
             payload = {
                 "productId": int(m.product_id) if m.product_id.isdigit() else m.product_id,
-                "storeId": int(m.store_id) if m.store_id.isdigit() else 2319,
+                "storeId": int(target_store) if str(target_store).isdigit() else 2319,
                 "quantity": m.quantity,
             }
             try:
@@ -169,11 +299,11 @@ class OkalaAdapter(BaseStoreAdapter):
 
         return CartMutationResult(
             platform=self.platform_name,
-            store_id="2319",
+            store_id=active_store_id,
             success=items_added > 0,
             items_added=items_added,
-            verified_with_optimizer=True
+            verified_with_optimizer=items_added == len(mutations)
         )
 
     def get_checkout_url(self, store_id: Optional[str] = None) -> str:
-        return "https://okala.com/checkout"
+        return "https://okala.com/cart"

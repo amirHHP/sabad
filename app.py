@@ -140,6 +140,62 @@ with col_o2:
     else:
         st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
 
+with st.sidebar.expander("🔑 ورود به حساب فروشگاه‌ها (OTP)", expanded=False):
+    store_map = {
+        "اسنپ‌مارکت": ("snapp_market", SnappMarketAdapter()),
+        "دیجی‌کالا جت": ("digikala_jet", DigikalaJetAdapter()),
+        "افق کوروش / اکالا": ("okala", OkalaAdapter()),
+    }
+    sel_store_label = st.selectbox("انتخاب فروشگاه:", list(store_map.keys()))
+    sel_platform, sel_adapter = store_map[sel_store_label]
+
+    is_logged_in = SessionManager.is_authenticated(sel_platform)
+    if is_logged_in:
+        user_phone = SessionManager.get_phone(sel_platform) or "احراز هویت شده"
+        st.success(f"حساب فعال: {user_phone}")
+        if st.button("خروج از حساب", key=f"logout_{sel_platform}"):
+            SessionManager.clear_session(sel_platform)
+            st.rerun()
+    else:
+        phone_val = st.text_input(
+            "شماره موبایل (۰۹XXXXXXXXX):",
+            placeholder="0912...",
+            key=f"phone_input_{sel_platform}"
+        )
+        if st.button("📩 ارسال کد تایید پیامکی", key=f"send_otp_btn_{sel_platform}"):
+            if len(phone_val) >= 10:
+                with st.spinner("در حال ارسال پیامک..."):
+                    send_res = asyncio.run(sel_adapter.send_otp(phone_val))
+                if send_res.get("success"):
+                    st.session_state[f"otp_sent_{sel_platform}"] = True
+                    if "challenge_token" in send_res:
+                        st.session_state[f"challenge_{sel_platform}"] = send_res["challenge_token"]
+                    st.success(send_res.get("message", "کد تأیید ارسال شد."))
+                else:
+                    st.error(send_res.get("message", "خطا در ارسال کد."))
+            else:
+                st.warning("لطفاً شماره موبایل معتبر وارد کنید.")
+
+        if st.session_state.get(f"otp_sent_{sel_platform}"):
+            otp_val = st.text_input(
+                "کد پیامک‌شده را وارد کنید:",
+                max_chars=6,
+                key=f"otp_input_{sel_platform}"
+            )
+            if st.button("✅ تأیید و ذخیره نشست", key=f"verify_otp_btn_{sel_platform}", type="primary"):
+                if len(otp_val) >= 4:
+                    with st.spinner("در حال تأیید کد و دریافت توکن..."):
+                        ch_token = st.session_state.get(f"challenge_{sel_platform}")
+                        verify_res = asyncio.run(sel_adapter.verify_otp(phone_val, otp_val, ch_token))
+                    if verify_res.get("success"):
+                        st.success("✅ ورود با موفقیت انجام شد و نشست ذخیره گردید!")
+                        st.session_state[f"otp_sent_{sel_platform}"] = False
+                        st.rerun()
+                    else:
+                        st.error(verify_res.get("message", "کد تأیید نامعتبر است."))
+                else:
+                    st.warning("کد تأیید باید حداقل ۴ رقم باشد.")
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧠 تنظیمات بهینه‌ساز")
 allow_split = st.sidebar.checkbox("امکان تقسیم سفارش بین چند فروشگاه (Multi-Store)", value=True)

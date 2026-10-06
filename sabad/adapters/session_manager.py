@@ -38,6 +38,26 @@ class SessionManager:
             json.dump(session_data, f, ensure_ascii=False, indent=2)
 
     @classmethod
+    def save_tokens(
+        cls,
+        platform: str,
+        token: str,
+        refresh_token: Optional[str] = None,
+        phone: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Helper to quickly persist tokens and phone number."""
+        session_data = cls.load_session(platform)
+        session_data.update({
+            "token": token,
+            "access_token": token,
+            "refresh_token": refresh_token,
+            "phone": phone,
+            **(metadata or {})
+        })
+        cls.save_session(platform, session_data)
+
+    @classmethod
     def clear_session(cls, platform: str) -> None:
         """Deletes session file on logout or token expiration."""
         path = cls._get_path(platform)
@@ -49,6 +69,12 @@ class SessionManager:
         """Retrieves active Bearer token if present."""
         data = cls.load_session(platform)
         return data.get("token") or data.get("access_token")
+
+    @classmethod
+    def get_phone(cls, platform: str) -> Optional[str]:
+        """Retrieves stored phone number if present."""
+        data = cls.load_session(platform)
+        return data.get("phone")
 
     @classmethod
     def is_authenticated(cls, platform: str) -> bool:

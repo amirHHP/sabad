@@ -3,7 +3,7 @@ Digikala Jet Live Platform Adapter.
 Connects directly to live api.digikalajet.ir endpoints.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import urllib.parse
 import httpx
 from sabad.adapters.base import BaseStoreAdapter
@@ -37,8 +37,7 @@ class DigikalaJetAdapter(BaseStoreAdapter):
         return SessionManager.is_authenticated(self.platform_name)
 
     async def get_store_info(self, lat: float, lng: float) -> Optional[StoreInfo]:
-        """Resolves serving dark store and shipping tiers."""
-        # Query nearby shops
+        """Resolves serving dark store or supermarket branch, live delivery fee, and MOV."""
         url = f"{self.base_url}/search/shop/?latitude={lat}&longitude={lng}&onlyShops=true"
         try:
             resp = await self.client.get(url)
@@ -46,13 +45,27 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                 payload = resp.json().get("data", {})
                 results = payload.get("result", [])
                 if results:
-                    shop = results[0]
+                    # Select nearest supermarket / grocery darkstore
+                    supermarket_shop = None
+                    for s in results:
+                        s_title = s.get("title", "")
+                        if any(k in s_title for k in ["سوپر", "مارکت", "پروتئین", "هایپر"]):
+                            supermarket_shop = s
+                            break
+                    shop = supermarket_shop or results[0]
                     shop_id = str(shop.get("id", "jet_darkstore"))
                     title = shop.get("title", "جت مارت")
                     
+                    # Extract live delivery fees from Jet shop data
+                    delivery_info = shop.get("delivery", {})
+                    raw_cost_rials = delivery_info.get("cost")
+                    cost_tomans = float(raw_cost_rials) / 10.0 if raw_cost_rials is not None else 29000.0
+                    free_price_rials = delivery_info.get("free_shipping_price")
+                    free_thresh_tomans = float(free_price_rials) / 10.0 if free_price_rials else 450000.0
+
                     tiers = [
-                        DeliveryTier(min_subtotal=0, max_subtotal=450000, fee=29000),
-                        DeliveryTier(min_subtotal=450000, max_subtotal=None, fee=0),
+                        DeliveryTier(min_subtotal=0, max_subtotal=free_thresh_tomans, fee=cost_tomans),
+                        DeliveryTier(min_subtotal=free_thresh_tomans, max_subtotal=None, fee=0),
                     ]
                     return StoreInfo(
                         platform=self.platform_name,
@@ -62,8 +75,8 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                         minimum_order_value=DEFAULT_MOV_TOMANS["digikala_jet"],
                         delivery_tiers=tiers
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error fetching Jet store info: {e}")
 
         return StoreInfo(
             platform=self.platform_name,
@@ -91,7 +104,6 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                 
                 for r in results:
                     price_info = r.get("price") or {}
-                    # Jet prices are in Rials -> convert to Tomans
                     price_rials = float(price_info.get("price", 0))
                     discount_rials = float(price_info.get("discount", 0))
                     pct = float(price_info.get("discount_percentage", 0))
@@ -171,6 +183,56 @@ class DigikalaJetAdapter(BaseStoreAdapter):
 
         return deals
 
+    async def send_otp(self, phone: str) -> Dict[str, Any]:
+        """Requests OTP SMS challenge from Digikala Jet auth endpoint."""
+        url = f"{self.base_url}/user/login-register/"
+        payload = {"phone": phone}
+        try:
+            resp = await self.client.post(url, json=payload)
+            if resp.status_code == 200:
+                body = resp.json()
+                data = body.get("data", {})
+                challenge_token = data.get("token")
+                sms_ttl = data.get("sms_ttl", 120)
+                if challenge_token:
+                    return {
+                        "success": True,
+                        "challenge_token": challenge_token,
+                        "sms_ttl": sms_ttl,
+                        "message": f"کد تأیید به شماره {phone} ارسال شد."
+                    }
+                return {"success": False, "message": body.get("message") or "خطا در صدور کد تأیید جت"}
+            return {"success": False, "message": f"خطای سرور جت: {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": f"خطا در ارتباط با دیجی‌کالا جت: {e}"}
+
+    async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> Dict[str, Any]:
+        """Verifies Digikala Jet OTP code using challenge token."""
+        url = f"{self.base_url}/user/confirm-phone/"
+        payload = {
+            "phone": phone,
+            "code": otp_code,
+            "token": challenge_token,
+            "isLoginRedesign": True
+        }
+        try:
+            resp = await self.client.post(url, json=payload)
+            if resp.status_code == 200:
+                body = resp.json()
+                data = body.get("data", {})
+                user_token = data.get("token")
+                if user_token:
+                    SessionManager.save_tokens(
+                        self.platform_name,
+                        token=user_token,
+                        phone=phone,
+                        metadata=data
+                    )
+                    return {"success": True, "message": "ورود به دیجی‌کالا جت با موفقیت انجام شد."}
+            return {"success": False, "message": "کد تأیید وارد شده نامعتبر یا منقضی است."}
+        except Exception as e:
+            return {"success": False, "message": f"خطا در تأیید کد دیجی‌کالا جت: {e}"}
+
     async def add_to_cart(self, mutations: List[CartItemMutation]) -> CartMutationResult:
         """Executes authenticated add-to-cart against Digikala Jet."""
         token = SessionManager.get_token(self.platform_name)
@@ -204,8 +266,8 @@ class DigikalaJetAdapter(BaseStoreAdapter):
             store_id="jet",
             success=items_added > 0,
             items_added=items_added,
-            verified_with_optimizer=True
+            verified_with_optimizer=items_added == len(mutations)
         )
 
     def get_checkout_url(self, store_id: Optional[str] = None) -> str:
-        return "https://www.digikalajet.com/checkout/shipping"
+        return "https://www.digikalajet.com/cart"

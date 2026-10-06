@@ -52,3 +52,13 @@ class BaseStoreAdapter(ABC):
     def is_authenticated(self) -> bool:
         """Checks if valid user session credentials are stored locally."""
         pass
+
+    @abstractmethod
+    async def send_otp(self, phone: str) -> dict:
+        """Requests an OTP SMS challenge to be sent to user's phone."""
+        pass
+
+    @abstractmethod
+    async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> dict:
+        """Verifies OTP challenge and persists user session credentials."""
+        pass

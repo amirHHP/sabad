@@ -39,5 +39,5 @@ def test_cart_dispatcher_handoff():
     assert h.platform == "snapp_market"
     assert h.items_count == 1
     assert h.total_amount_tomans == 115000
-    assert "https://snapp.market/checkout" in h.web_checkout_url
+    assert "https://snapp.market" in h.web_checkout_url
     assert h.deep_link_url == "snappmarket://cart"

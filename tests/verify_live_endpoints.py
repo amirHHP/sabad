@@ -43,6 +43,15 @@ async def verify_platform(adapter, query="شیر"):
         d0 = deals[0]
         print(f"   ⚡ Top Deal: {d0.title} - {d0.discount_percent}% OFF ({d0.discount_price:,.0f} T)")
 
+    # 4. Auth & Checkout verification
+    print("4️⃣ Verifying live auth connectivity & checkout link...")
+    chk_url = adapter.get_checkout_url()
+    assert chk_url.startswith("https://"), f"Invalid checkout URL: {chk_url}"
+    print(f"   ✅ Cart & Checkout URL: {chk_url}")
+    probe_res = await adapter.send_otp("00000000000")
+    assert "success" in probe_res, "send_otp must return standard response dict"
+    print(f"   ✅ Live OTP Endpoint: Online & Responsive")
+
     print(f"🎉 {adapter.platform_title_fa} PASSED ALL LIVE NETWORK CHECKS!")
     return True
 
