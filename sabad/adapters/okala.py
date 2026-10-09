@@ -211,9 +211,11 @@ class OkalaAdapter(BaseStoreAdapter):
 
     async def send_otp(self, phone: str) -> Dict[str, Any]:
         """Sends OTP SMS code to the user's phone via Okala customer gateway."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
         url = f"{self.base_url}/api/voyager/C/CustomerAccount/OTPRegister"
         payload = {
-            "mobile": phone,
+            "mobile": clean_phone,
             "deviceTypeCode": 0,
             "confirmTerms": True,
             "notRobot": False,
@@ -225,17 +227,20 @@ class OkalaAdapter(BaseStoreAdapter):
         }
         try:
             resp = await self.client.post(url, json=payload)
+            body = resp.json() if resp.status_code in [200, 400] else {}
             if resp.status_code == 200:
-                data = resp.json()
-                if data.get("success", False):
+                if body.get("success", False):
                     return {"success": True, "message": "کد تأیید با موفقیت ارسال شد."}
-                return {"success": False, "message": data.get("message") or "ارسال کد با خطا مواجه شد."}
-            return {"success": False, "message": f"خطای سرور: {resp.status_code}"}
+                return {"success": False, "message": body.get("message") or "ارسال کد با خطا مواجه شد."}
+            return {"success": False, "message": body.get("message") or f"خطای سرور: {resp.status_code}"}
         except Exception as e:
             return {"success": False, "message": f"خطا در ارتباط با سرور اکالا: {e}"}
 
     async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> Dict[str, Any]:
         """Exchanges Okala OTP code for Bearer and refresh tokens."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
+        clean_code = to_english_digits(otp_code.strip())
         url = f"{self.base_url}/api/v1/accounts/tokens"
         form_data = {
             "grant_type": "customer_grant_type",
@@ -244,26 +249,26 @@ class OkalaAdapter(BaseStoreAdapter):
             "client_name": "customer_client_name",
             "device_type_code": "0",
             "scope": "offline_access",
-            "mobile_number": phone,
-            "otp_code": otp_code,
+            "mobile_number": clean_phone,
+            "otp_code": clean_code,
         }
         headers = {**OKALA_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
         try:
             resp = await self.client.post(url, data=form_data, headers=headers)
+            body = resp.json() if resp.status_code in [200, 400] else {}
             if resp.status_code == 200:
-                token_data = resp.json()
-                access_token = token_data.get("access_token")
-                refresh_token = token_data.get("refresh_token")
+                access_token = body.get("access_token")
+                refresh_token = body.get("refresh_token")
                 if access_token:
                     SessionManager.save_tokens(
                         self.platform_name,
                         token=access_token,
                         refresh_token=refresh_token,
-                        phone=phone,
-                        metadata=token_data
+                        phone=clean_phone,
+                        metadata=body
                     )
                     return {"success": True, "message": "احراز هویت با موفقیت انجام شد."}
-            return {"success": False, "message": "کد تأیید وارد شده نامعتبر یا منقضی شده است."}
+            return {"success": False, "message": body.get("error_description") or body.get("message") or "کد تأیید وارد شده نامعتبر یا منقضی شده است."}
         except Exception as e:
             return {"success": False, "message": f"خطا در تأیید کد اکالا: {e}"}
 

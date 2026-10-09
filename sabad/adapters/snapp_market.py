@@ -146,43 +146,73 @@ class SnappMarketAdapter(BaseStoreAdapter):
             deals = await self.search("کالابرگ", lat, lng)
         return [d for d in deals if d.discount_percent >= 15.0]
 
+    def _get_udid(self) -> str:
+        """Retrieves or creates a persistent device UDID for SnappMarket API."""
+        import uuid
+        session = SessionManager.load_session(self.platform_name)
+        udid = session.get("udid")
+        if not udid:
+            udid = str(uuid.uuid4())
+            session["udid"] = udid
+            SessionManager.save_session(self.platform_name, session)
+        return udid
+
     async def send_otp(self, phone: str) -> Dict[str, Any]:
         """Sends OTP challenge to the user's phone via SnappMarket login endpoint."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
         url = f"{self.base_url}/mobile/v4/user/loginMobileWithNoPass"
-        payload = {"cellphone": phone, "optionalLoginToken": True}
+        params = {
+            "client": "PWA",
+            "deviceType": "PWA",
+            "appVersion": "10.10.10",
+            "UDID": self._get_udid(),
+        }
+        payload = {"cellphone": clean_phone, "optionalLoginToken": True}
         try:
-            resp = await self.client.post(url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status"):
-                    return {"success": True, "message": "کد تأیید پیامک شد."}
-                return {"success": False, "message": data.get("error") or data.get("message") or "ارسال کد ناموفق بود."}
-            return {"success": False, "message": f"خطای سرور: {resp.status_code}"}
+            resp = await self.client.post(url, params=params, json=payload)
+            body = resp.json() if resp.status_code in [200, 400] else {}
+            if resp.status_code == 200 and body.get("status"):
+                return {"success": True, "message": "کد تأیید با موفقیت پیامک شد."}
+            err_msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("error")
+            return {"success": False, "message": err_msg or body.get("message") or "ارسال کد ناموفق بود."}
         except Exception as e:
             return {"success": False, "message": f"خطا در ارسال کد اسنپ‌مارکت: {e}"}
 
     async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> Dict[str, Any]:
         """Exchanges SnappMarket OTP code for access token."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
+        clean_code = to_english_digits(otp_code.strip())
         url = f"{self.base_url}/mobile/v2/user/loginMobileWithToken"
-        payload = {"cellphone": phone, "code": otp_code}
+        params = {
+            "client": "PWA",
+            "deviceType": "PWA",
+            "appVersion": "10.10.10",
+            "UDID": self._get_udid(),
+        }
+        payload = {"cellphone": clean_phone, "code": clean_code}
         try:
-            resp = await self.client.post(url, json=payload)
-            if resp.status_code == 200:
-                body = resp.json()
+            resp = await self.client.post(url, params=params, json=payload)
+            body = resp.json()
+            if resp.status_code == 200 and body.get("status"):
                 data = body.get("data", {})
-                oauth = data.get("oauth2Token", {})
-                access_token = oauth.get("accessToken")
-                refresh_token = oauth.get("refreshToken")
+                oauth = data.get("oauth2Token") or data.get("oauth2_token") or {}
+                access_token = oauth.get("accessToken") or oauth.get("access_token")
+                refresh_token = oauth.get("refreshToken") or oauth.get("refresh_token")
                 if access_token:
                     SessionManager.save_tokens(
                         self.platform_name,
                         token=access_token,
                         refresh_token=refresh_token,
-                        phone=phone,
+                        phone=clean_phone,
                         metadata=data
                     )
                     return {"success": True, "message": "ورود به اسنپ‌مارکت با موفقیت انجام شد."}
-            return {"success": False, "message": "کد تأیید نامعتبر است."}
+            
+            err_obj = body.get("error", {})
+            err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+            return {"success": False, "message": err_msg or body.get("message") or "کد تأیید نامعتبر یا منقضی شده است."}
         except Exception as e:
             return {"success": False, "message": f"خطا در تأیید کد اسنپ‌مارکت: {e}"}
 

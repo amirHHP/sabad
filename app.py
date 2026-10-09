@@ -33,10 +33,15 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;800;900&display=swap');
     
-    html, body, [class*="css"], .stMarkdown, .stText, p, span, h1, h2, h3, h4, h5, h6, input, textarea, button, select {
+    html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6, input, textarea, button, select {
         font-family: 'Vazirmatn', sans-serif !important;
         direction: rtl !important;
         text-align: right !important;
+    }
+
+    [data-testid="stIcon"], [data-testid="stExpanderToggleIcon"], .material-symbols-rounded, .material-icons {
+        font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
+        direction: ltr !important;
     }
     
     [data-testid="stSidebar"] {

@@ -185,12 +185,14 @@ class DigikalaJetAdapter(BaseStoreAdapter):
 
     async def send_otp(self, phone: str) -> Dict[str, Any]:
         """Requests OTP SMS challenge from Digikala Jet auth endpoint."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
         url = f"{self.base_url}/user/login-register/"
-        payload = {"phone": phone}
+        payload = {"phone": clean_phone}
         try:
             resp = await self.client.post(url, json=payload)
+            body = resp.json() if resp.status_code in [200, 400] else {}
             if resp.status_code == 200:
-                body = resp.json()
                 data = body.get("data", {})
                 challenge_token = data.get("token")
                 sms_ttl = data.get("sms_ttl", 120)
@@ -199,37 +201,40 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                         "success": True,
                         "challenge_token": challenge_token,
                         "sms_ttl": sms_ttl,
-                        "message": f"کد تأیید به شماره {phone} ارسال شد."
+                        "message": f"کد تأیید به شماره {clean_phone} ارسال شد."
                     }
                 return {"success": False, "message": body.get("message") or "خطا در صدور کد تأیید جت"}
-            return {"success": False, "message": f"خطای سرور جت: {resp.status_code}"}
+            return {"success": False, "message": body.get("message") or f"خطای سرور جت: {resp.status_code}"}
         except Exception as e:
             return {"success": False, "message": f"خطا در ارتباط با دیجی‌کالا جت: {e}"}
 
     async def verify_otp(self, phone: str, otp_code: str, challenge_token: Optional[str] = None) -> Dict[str, Any]:
         """Verifies Digikala Jet OTP code using challenge token."""
+        from sabad.normalizer.persian_digits import to_english_digits
+        clean_phone = to_english_digits(phone.strip())
+        clean_code = to_english_digits(otp_code.strip())
         url = f"{self.base_url}/user/confirm-phone/"
         payload = {
-            "phone": phone,
-            "code": otp_code,
+            "phone": clean_phone,
+            "code": clean_code,
             "token": challenge_token,
             "isLoginRedesign": True
         }
         try:
             resp = await self.client.post(url, json=payload)
+            body = resp.json() if resp.status_code in [200, 400] else {}
             if resp.status_code == 200:
-                body = resp.json()
                 data = body.get("data", {})
                 user_token = data.get("token")
                 if user_token:
                     SessionManager.save_tokens(
                         self.platform_name,
                         token=user_token,
-                        phone=phone,
+                        phone=clean_phone,
                         metadata=data
                     )
                     return {"success": True, "message": "ورود به دیجی‌کالا جت با موفقیت انجام شد."}
-            return {"success": False, "message": "کد تأیید وارد شده نامعتبر یا منقضی است."}
+            return {"success": False, "message": body.get("message") or "کد تأیید وارد شده نامعتبر یا منقضی است."}
         except Exception as e:
             return {"success": False, "message": f"خطا در تأیید کد دیجی‌کالا جت: {e}"}
 
