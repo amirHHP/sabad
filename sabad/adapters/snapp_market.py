@@ -206,14 +206,35 @@ class SnappMarketAdapter(BaseStoreAdapter):
             "UDID": self._get_udid(),
         }
         payload = {"cellphone": clean_phone, "code": clean_code}
+        headers = {**SNAPP_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
         try:
-            resp = await self.client.post(url, params=params, json=payload)
-            body = resp.json()
+            # First try form-urlencoded as specified by SnappMarket web client
+            resp = await self.client.post(url, params=params, data=payload, headers=headers)
+            body = resp.json() if resp.status_code in [200, 400] else {}
+
+            # If not successful, fallback to json payload
+            if resp.status_code != 200 and not body.get("status"):
+                fallback_resp = await self.client.post(url, params=params, json=payload)
+                if fallback_resp.status_code == 200 or fallback_resp.json().get("status"):
+                    resp = fallback_resp
+                    body = fallback_resp.json()
+
             if resp.status_code == 200 and body.get("status"):
                 data = body.get("data", {})
                 oauth = data.get("oauth2Token") or data.get("oauth2_token") or {}
-                access_token = oauth.get("accessToken") or oauth.get("access_token")
-                refresh_token = oauth.get("refreshToken") or oauth.get("refresh_token")
+                access_token = (
+                    oauth.get("accessToken")
+                    or oauth.get("access_token")
+                    or data.get("token")
+                    or data.get("accessToken")
+                    or data.get("access_token")
+                )
+                refresh_token = (
+                    oauth.get("refreshToken")
+                    or oauth.get("refresh_token")
+                    or data.get("refreshToken")
+                    or data.get("refresh_token")
+                )
                 if access_token:
                     SessionManager.save_tokens(
                         self.platform_name,

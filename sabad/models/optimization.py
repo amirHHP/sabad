@@ -49,6 +49,40 @@ class TrapAuditReport(BaseModel):
     summary_fa: str = ""
 
 
+class FlashDealOpportunity(BaseModel):
+    """
+    Actionable recommendation to leverage daily 40%-70% flash deals:
+    1. same_store_addon: Add high-discount deal from current store at low price without extra delivery fee.
+    2. store_switch_deal: Switch store and add super deal to make total basket far more profitable.
+    """
+    opportunity_type: str = Field(description="'same_store_addon' or 'store_switch_deal'")
+    deal_item: StoreItem
+    target_store: str
+    target_store_title: str
+    current_store: Optional[str] = None
+    current_store_title: Optional[str] = None
+
+    # Financial metrics (Tomans)
+    deal_discount_percent: float = Field(default=0.0, ge=0, le=100)
+    deal_base_price: float = Field(default=0.0, ge=0)
+    deal_discount_price: float = Field(default=0.0, ge=0)
+    deal_nominal_saving: float = Field(default=0.0, ge=0)
+
+    # Basket level financial impact
+    current_basket_cost: float = Field(default=0.0, ge=0)
+    projected_basket_cost: float = Field(default=0.0, ge=0)
+    current_basket_savings: float = Field(default=0.0, ge=0)
+    projected_basket_savings: float = Field(default=0.0, ge=0)
+    net_profit_increase: float = Field(default=0.0)
+    is_cheaper_total: bool = False
+
+    # Explanations in Persian
+    title_fa: str = ""
+    message_fa: str = ""
+    badge_fa: str = ""
+    action_label_fa: str = ""
+
+
 class OptimizationResult(BaseModel):
     """Final solution produced by the mathematical optimizer."""
     # Single-store evaluations (100% basket from Store A, B, or C)
@@ -68,3 +102,7 @@ class OptimizationResult(BaseModel):
     
     # Flash deal trap analysis
     trap_audit: TrapAuditReport = Field(default_factory=TrapAuditReport)
+
+    # Flash deal opportunities (40%-70% high discount recommendations)
+    deal_opportunities: List[FlashDealOpportunity] = Field(default_factory=list)
+

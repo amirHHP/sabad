@@ -11,9 +11,12 @@ from sabad.models.optimization import (
     OptimizationResult,
     StoreOrder,
     BasketItemAssignment,
+    FlashDealOpportunity,
 )
 from sabad.optimizer.single_store import evaluate_single_store, calculate_delivery_fee
 from sabad.optimizer.trap_auditor import TrapAuditor
+from sabad.optimizer.deal_advisor import FlashDealAdvisor
+
 
 
 class MILPBasketOptimizer:
@@ -27,13 +30,15 @@ class MILPBasketOptimizer:
         basket_items: List[ParsedGroceryItem],
         catalog_matches: Dict[str, Dict[str, Optional[StoreItem]]],
         store_infos: Dict[str, StoreInfo],
-        allow_multi_store: bool = True
+        allow_multi_store: bool = True,
+        flash_deals_by_store: Optional[Dict[str, List[StoreItem]]] = None,
     ) -> OptimizationResult:
         """
         Runs the complete optimization pipeline:
         1. Single-Store evaluations for SnappMarket, Digikala Jet, and Okala.
         2. Flash Deal Trap Audit.
         3. Combinatorial / MILP Optimization for multi-store split.
+        4. Flash Deal Opportunity Advisor (40% to 70% daily deals).
         """
         # Step 1: Single-Store Evaluations
         single_store_orders: Dict[str, Optional[StoreOrder]] = {}
@@ -56,7 +61,15 @@ class MILPBasketOptimizer:
                 default=None
             )
             orders = [best_single] if best_single else []
-            return self._build_result(orders, single_store_orders, trap_report, is_multi=False)
+            deal_opps = FlashDealAdvisor.find_opportunities(
+                basket_items=basket_items,
+                catalog_matches=catalog_matches,
+                store_infos=store_infos,
+                single_store_orders=single_store_orders,
+                optimal_orders=orders,
+                flash_deals_by_store=flash_deals_by_store,
+            )
+            return self._build_result(orders, single_store_orders, trap_report, is_multi=False, deal_opportunities=deal_opps)
 
         # Step 3: Solve Combinatorial Optimization
         optimal_orders, is_multi = self._solve_combinatorial(
@@ -66,7 +79,18 @@ class MILPBasketOptimizer:
             single_store_orders
         )
 
-        return self._build_result(optimal_orders, single_store_orders, trap_report, is_multi=is_multi)
+        # Step 4: Flash Deal Opportunity Advisor
+        deal_opps = FlashDealAdvisor.find_opportunities(
+            basket_items=basket_items,
+            catalog_matches=catalog_matches,
+            store_infos=store_infos,
+            single_store_orders=single_store_orders,
+            optimal_orders=optimal_orders,
+            flash_deals_by_store=flash_deals_by_store,
+        )
+
+        return self._build_result(optimal_orders, single_store_orders, trap_report, is_multi=is_multi, deal_opportunities=deal_opps)
+
 
     def _solve_combinatorial(
         self,
@@ -199,7 +223,8 @@ class MILPBasketOptimizer:
         optimal_orders: List[StoreOrder],
         single_orders: Dict[str, Optional[StoreOrder]],
         trap_report: TrapAuditor,
-        is_multi: bool
+        is_multi: bool,
+        deal_opportunities: Optional[List[FlashDealOpportunity]] = None,
     ) -> OptimizationResult:
         """Assembles the final metrics and OptimizationResult object."""
         items_cost = sum(o.items_subtotal for o in optimal_orders)
@@ -228,5 +253,7 @@ class MILPBasketOptimizer:
             total_discounts_saved=discounts,
             net_savings_versus_worst=savings_vs_worst,
             net_savings_versus_best_single=savings_vs_best,
-            trap_audit=trap_report
+            trap_audit=trap_report,
+            deal_opportunities=deal_opportunities or [],
         )
+

@@ -10,6 +10,7 @@ from sabad.models.optimization import (
     TrapAuditItem,
     TrapAuditReport,
     OptimizationResult,
+    FlashDealOpportunity,
 )
 from sabad.models.dispatch import CartItemMutation, CartMutationResult, CheckoutHandoff
 
@@ -25,6 +26,7 @@ __all__ = [
     "TrapAuditItem",
     "TrapAuditReport",
     "OptimizationResult",
+    "FlashDealOpportunity",
     "CartItemMutation",
     "CartMutationResult",
     "CheckoutHandoff",

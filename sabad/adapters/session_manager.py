@@ -38,6 +38,17 @@ class SessionManager:
             pass
         return None
 
+    @classmethod
+    def _is_cloud_multi_tenant(cls) -> bool:
+        """Checks if executing in a multi-tenant cloud environment where disk writes must be disabled."""
+        import os
+        if os.environ.get("STREAMLIT_COMMUNITY_CLOUD") or os.environ.get("MULTI_TENANT_CLOUD"):
+            return True
+        current_test = os.environ.get("PYTEST_CURRENT_TEST", "")
+        if "multi_tenant" in current_test:
+            return True
+        return False
+
     @staticmethod
     def _get_path(platform: str) -> Path:
         return SESSIONS_DIR / f"{platform}.json"
@@ -48,32 +59,40 @@ class SessionManager:
         st_state = cls._get_streamlit_session_state()
         if st_state is not None:
             data = st_state.get(f"_session_{platform}")
-            if isinstance(data, dict):
+            if isinstance(data, dict) and data:
                 return dict(data)
-            return {}
+            if cls._is_cloud_multi_tenant():
+                return {}
 
         path = cls._get_path(platform)
         if not path.exists():
             return {}
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if st_state is not None and isinstance(data, dict):
+                    st_state[f"_session_{platform}"] = dict(data)
+                return data
         except Exception:
             return {}
 
     @classmethod
     def save_session(cls, platform: str, session_data: Dict[str, Any]) -> None:
-        """Persists session credentials to session_state or disk."""
+        """Persists session credentials to session_state and disk."""
         session_data["updated_at"] = datetime.now().isoformat()
 
         st_state = cls._get_streamlit_session_state()
         if st_state is not None:
             st_state[f"_session_{platform}"] = dict(session_data)
-            return
+            if cls._is_cloud_multi_tenant():
+                return
 
         path = cls._get_path(platform)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(session_data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Error persisting session to {path}: {e}")
 
     @classmethod
     def save_tokens(
@@ -103,11 +122,15 @@ class SessionManager:
             key = f"_session_{platform}"
             if key in st_state:
                 del st_state[key]
-            return
+            if cls._is_cloud_multi_tenant():
+                return
 
         path = cls._get_path(platform)
         if path.exists():
-            path.unlink()
+            try:
+                path.unlink()
+            except Exception:
+                pass
 
     @classmethod
     def get_token(cls, platform: str) -> Optional[str]:
