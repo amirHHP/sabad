@@ -12,6 +12,7 @@ from sabad.adapters.base import BaseStoreAdapter
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.models.catalog import StoreItem, StoreInfo
 from sabad.models.grocery import ParsedGroceryItem
 from sabad.normalizer.matcher import (
@@ -87,6 +88,7 @@ class CatalogHarvester:
             "snapp_market": SnappMarketAdapter(),
             "digikala_jet": DigikalaJetAdapter(),
             "okala": OkalaAdapter(),
+            "tapsi_market": TapsiMarketAdapter(),
         }
 
     async def harvest_flash_deals(

@@ -167,7 +167,7 @@ def test_stress_corrupt_session_state_resilience():
 
     # Inject corrupt / empty session states
     at.session_state["catalog_matches"] = {"corrupt_key": None}
-    at.session_state["store_infos"] = {"snapp_market": None, "digikala_jet": None, "okala": None}
+    at.session_state["store_infos"] = {"snapp_market": None, "digikala_jet": None, "okala": None, "tapsi_market": None}
     at.session_state["basket_items"] = []
     at.session_state["adapters"] = None
 
@@ -177,6 +177,7 @@ def test_stress_corrupt_session_state_resilience():
             "snapp_market": None,
             "digikala_jet": None,
             "okala": None,
+            "tapsi_market": None,
         },
         optimal_orders=[],
         is_multi_store=False,
@@ -189,7 +190,7 @@ def test_stress_corrupt_session_state_resilience():
 
     at.run(timeout=30)
     assert len(at.exception) == 0, f"Crashed on corrupt session state: {at.exception}"
-    assert len(at.tabs) == 4, "All 4 tabs must still render gracefully"
+    assert len(at.tabs) == 5, "All 5 tabs must still render gracefully"
 
 
 # ============================================================================
@@ -231,13 +232,23 @@ def base_store_infos():
                 DeliveryTier(min_subtotal=250000, max_subtotal=None, fee=0.0),
             ],
         ),
+        "tapsi_market": StoreInfo(
+            platform="tapsi_market",
+            store_id="tapsi_br_1",
+            title="هایپر میوه آندیا مارکت (تپسی مارکت)",
+            is_open=True,
+            minimum_order_value=100000.0,
+            delivery_tiers=[
+                DeliveryTier(min_subtotal=0, max_subtotal=None, fee=30000.0),
+            ],
+        ),
     }
 
 
 def test_breakdown_edge_case_all_missing_items(base_store_infos):
     """
-    Edge Case: 100% of requested items are missing / out of stock across all 3 stores.
-    Verifies that all 4 tabs render, missing containers show diagnostics, and no exceptions are raised.
+    Edge Case: 100% of requested items are missing / out of stock across all stores.
+    Verifies that all 5 tabs render, missing containers show diagnostics, and no exceptions are raised.
     """
     basket_items = [
         ParsedGroceryItem(raw_text="یه پنیر محلی تبریز ۵۰۰ گرمی", name="پنیر محلی", quantity=1),
@@ -246,8 +257,8 @@ def test_breakdown_edge_case_all_missing_items(base_store_infos):
 
     # Every store has None for every item
     catalog_matches = {
-        basket_items[0].raw_text: {"snapp_market": None, "digikala_jet": None, "okala": None},
-        basket_items[1].raw_text: {"snapp_market": None, "digikala_jet": None, "okala": None},
+        basket_items[0].raw_text: {"snapp_market": None, "digikala_jet": None, "okala": None, "tapsi_market": None},
+        basket_items[1].raw_text: {"snapp_market": None, "digikala_jet": None, "okala": None, "tapsi_market": None},
     }
 
     opt_result = OptimizationResult(
@@ -265,6 +276,7 @@ def test_breakdown_edge_case_all_missing_items(base_store_infos):
             ),
             "digikala_jet": None,
             "okala": None,
+            "tapsi_market": None,
         },
         optimal_orders=[],
         is_multi_store=False,
@@ -285,8 +297,8 @@ def test_breakdown_edge_case_all_missing_items(base_store_infos):
     at.run(timeout=30)
     assert len(at.exception) == 0, f"Crashed on all-missing items: {at.exception}"
 
-    # Verify 4 tabs
-    assert len(at.tabs) == 4
+    # Verify 5 tabs
+    assert len(at.tabs) == 5
 
     # Verify missing items diagnostic text is displayed
     markdown_texts = [m.value for m in at.markdown]

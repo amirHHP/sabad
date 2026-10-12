@@ -9,6 +9,7 @@ import sys
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.config import DEFAULT_LATITUDE, DEFAULT_LONGITUDE
 
 
@@ -64,6 +65,7 @@ async def main():
         SnappMarketAdapter(),
         DigikalaJetAdapter(),
         OkalaAdapter(),
+        TapsiMarketAdapter(),
     ]
 
     results = await asyncio.gather(*(verify_platform(ad) for ad in adapters), return_exceptions=True)

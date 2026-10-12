@@ -37,6 +37,7 @@ GEMINI_MODEL = getattr(config, "GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.adapters.session_manager import SessionManager
 from sabad.normalizer.parser import parse_grocery_input
 from sabad.normalizer.matcher import match_sku, extract_volume_from_title
@@ -177,11 +178,21 @@ with col_o2:
     else:
         st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
 
+col_t1, col_t2 = st.sidebar.columns([3, 2])
+with col_t1:
+    st.write("تپسی مارکت:")
+with col_t2:
+    if SessionManager.is_authenticated("tapsi_market"):
+        st.markdown('<span class="badge-ok">🟢 متصل</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
+
 with st.sidebar.expander("🔑 ورود به حساب فروشگاه‌ها (OTP)", expanded=False):
     store_map = {
         "اسنپ‌مارکت": ("snapp_market", SnappMarketAdapter()),
         "دیجی‌کالا جت": ("digikala_jet", DigikalaJetAdapter()),
         "افق کوروش / اکالا": ("okala", OkalaAdapter()),
+        "تپسی مارکت": ("tapsi_market", TapsiMarketAdapter()),
     }
     sel_store_label = st.selectbox("انتخاب فروشگاه:", list(store_map.keys()))
     sel_platform, sel_adapter = store_map[sel_store_label]
@@ -732,11 +743,12 @@ if "opt_result" in st.session_state:
         else:
             st.info("سفارشی در سبد بهینه ثبت نشده است.")
 
-    tab_opt, tab_snapp, tab_jet, tab_okala = st.tabs([
+    tab_opt, tab_snapp, tab_jet, tab_okala, tab_tapsi = st.tabs([
         "🏆 سبد بهینه نهایی (تخصیص هوشمند)",
         "🟡 اسنپ‌مارکت (SnappMarket)",
         "🔴 دیجی‌کالا جت (Digikala Jet)",
         "🟢 افق کوروش / اکالا (Okala)",
+        "🟠 تپسی مارکت (Tapsi Market)",
     ])
 
     with tab_opt:
@@ -750,6 +762,9 @@ if "opt_result" in st.session_state:
 
     with tab_okala:
         render_store_audit_tab("okala", basket_items, catalog_matches, store_infos, opt_result, adapters)
+
+    with tab_tapsi:
+        render_store_audit_tab("tapsi_market", basket_items, catalog_matches, store_infos, opt_result, adapters)
 
     # -------------------------------------------------------------
     # Section 5: Cart Population & Payment Handoff

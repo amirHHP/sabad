@@ -221,6 +221,16 @@ def mock_calculation_data():
                 DeliveryTier(min_subtotal=300000, max_subtotal=None, fee=0.0),
             ],
         ),
+        "tapsi_market": StoreInfo(
+            platform="tapsi_market",
+            store_id="tapsi_branch_1",
+            title="هایپر میوه آندیا مارکت (تپسی مارکت)",
+            is_open=True,
+            minimum_order_value=100000.0,
+            delivery_tiers=[
+                DeliveryTier(min_subtotal=0, max_subtotal=None, fee=30000.0),
+            ],
+        ),
     }
 
     item1_snapp = StoreItem(
@@ -278,16 +288,30 @@ def mock_calculation_data():
         is_in_stock=True,
     )
 
+    item1_tapsi = StoreItem(
+        platform="tapsi_market",
+        store_id="tapsi_branch_1",
+        product_id="tapsi_milk",
+        title="شیر پرچرب کاله ۱ لیتری",
+        base_price=42000.0,
+        discount_price=36000.0,
+        discount_percent=14.0,
+        is_in_stock=True,
+    )
+    item2_tapsi = None
+
     catalog_matches = {
         basket_items[0].raw_text: {
             "snapp_market": item1_snapp,
             "digikala_jet": item1_jet,
             "okala": item1_okala,
+            "tapsi_market": item1_tapsi,
         },
         basket_items[1].raw_text: {
             "snapp_market": item2_snapp,
             "digikala_jet": item2_jet,
             "okala": item2_okala,
+            "tapsi_market": item2_tapsi,
         },
     }
 
@@ -448,11 +472,11 @@ def test_calculation_breakdown_session_state_persistence_across_reruns(mock_calc
 
     at.run(timeout=30)
     assert len(at.exception) == 0
-    assert len(at.tabs) == 4
+    assert len(at.tabs) == 5
 
     # Trigger a rerun via widget interaction
     if at.checkbox:
         at.checkbox[0].uncheck().run(timeout=30)
         assert len(at.exception) == 0
-        assert len(at.tabs) == 4, "Breakdown tabs must remain present across widget reruns"
+        assert len(at.tabs) == 5, "Breakdown tabs must remain present across widget reruns"
 

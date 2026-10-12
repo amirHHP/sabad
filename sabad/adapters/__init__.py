@@ -7,6 +7,7 @@ from sabad.adapters.session_manager import SessionManager
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 
 __all__ = [
     "BaseStoreAdapter",
@@ -14,4 +15,5 @@ __all__ = [
     "SnappMarketAdapter",
     "DigikalaJetAdapter",
     "OkalaAdapter",
+    "TapsiMarketAdapter",
 ]

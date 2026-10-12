@@ -9,6 +9,7 @@ from sabad.adapters.base import BaseStoreAdapter
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.models.optimization import StoreOrder
 from sabad.models.dispatch import (
     CartItemMutation,
@@ -25,6 +26,7 @@ class CartDispatcher:
             "snapp_market": SnappMarketAdapter(),
             "digikala_jet": DigikalaJetAdapter(),
             "okala": OkalaAdapter(),
+            "tapsi_market": TapsiMarketAdapter(),
         }
 
     async def dispatch_orders(self, orders: List[StoreOrder]) -> List[CheckoutHandoff]:
@@ -76,6 +78,7 @@ class CartDispatcher:
             "snapp_market": "snappmarket://cart",
             "digikala_jet": "digikalajet://cart",
             "okala": "okala://cart",
+            "tapsi_market": "tapsi://food/cart",
         }
 
         summary = (

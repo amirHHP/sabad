@@ -15,6 +15,7 @@ import argparse
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.adapters.session_manager import SessionManager
 from sabad.models.dispatch import CartItemMutation
 from sabad.config import DEFAULT_LATITUDE, DEFAULT_LONGITUDE
@@ -25,6 +26,7 @@ async def run_live_dispatch(platform: str, query: str = "شیر"):
         "snapp_market": SnappMarketAdapter(),
         "digikala_jet": DigikalaJetAdapter(),
         "okala": OkalaAdapter(),
+        "tapsi_market": TapsiMarketAdapter(),
     }
 
     adapter = adapters.get(platform)
@@ -115,7 +117,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live Cart Dispatch Tester")
     parser.add_argument(
         "--platform",
-        choices=["snapp_market", "digikala_jet", "okala"],
+        choices=["snapp_market", "digikala_jet", "okala", "tapsi_market"],
         default="digikala_jet",
         help="Platform to test"
     )

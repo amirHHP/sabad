@@ -39,6 +39,7 @@ DEFAULT_LONGITUDE = float(get_config("LONGITUDE", get_config("DEFAULT_LONGITUDE"
 SNAPP_MARKET_BASE_URL = get_config("SNAPP_MARKET_BASE_URL", "https://svc.snapp.market")
 DIGIKALA_JET_BASE_URL = get_config("DIGIKALA_JET_BASE_URL", "https://api.digikalajet.ir")
 OKALA_BASE_URL = get_config("OKALA_BASE_URL", "https://apigateway.okala.com")
+TAPSI_MARKET_BASE_URL = get_config("TAPSI_MARKET_BASE_URL", "https://api.tapsi.food")
 
 # Network timeouts (seconds)
 HTTP_TIMEOUT = float(get_config("HTTP_TIMEOUT", "12.0"))
@@ -56,6 +57,7 @@ DEFAULT_MOV_TOMANS = {
     "snapp_market": 100000,
     "digikala_jet": 120000,
     "okala": 100000,
+    "tapsi_market": 100000,
 }
 
 # Browser & Mobile Headers
@@ -88,6 +90,12 @@ OKALA_HEADERS = {
     "Referer": "https://www.okala.com/",
 }
 
+TAPSI_HEADERS = {
+    **COMMON_BROWSER_HEADERS,
+    "Origin": "https://tapsi.food",
+    "Referer": "https://tapsi.food/",
+}
+
 __all__ = [
     "get_config",
     "BASE_DIR",
@@ -97,6 +105,7 @@ __all__ = [
     "SNAPP_MARKET_BASE_URL",
     "DIGIKALA_JET_BASE_URL",
     "OKALA_BASE_URL",
+    "TAPSI_MARKET_BASE_URL",
     "HTTP_TIMEOUT",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
@@ -106,4 +115,5 @@ __all__ = [
     "SNAPP_HEADERS",
     "JET_HEADERS",
     "OKALA_HEADERS",
+    "TAPSI_HEADERS",
 ]

@@ -41,3 +41,38 @@ def test_cart_dispatcher_handoff():
     assert h.total_amount_tomans == 115000
     assert "https://snapp.market" in h.web_checkout_url
     assert h.deep_link_url == "snappmarket://cart"
+
+
+def test_cart_dispatcher_handoff_tapsi_market():
+    order = StoreOrder(
+        platform="tapsi_market",
+        store_id="v_test_branch",
+        items=[
+            BasketItemAssignment(
+                item=StoreItem(
+                    platform="tapsi_market",
+                    store_id="v_test_branch",
+                    product_id="9988",
+                    title="شیر کاله ۱ لیتری",
+                    base_price=40000,
+                    discount_price=36000
+                ),
+                quantity=1,
+                line_total=36000
+            )
+        ],
+        items_subtotal=36000,
+        delivery_fee=30000,
+        total_cost=66000
+    )
+
+    dispatcher = CartDispatcher()
+    handoffs = asyncio.run(dispatcher.dispatch_orders([order]))
+
+    assert len(handoffs) == 1
+    h = handoffs[0]
+    assert h.platform == "tapsi_market"
+    assert h.items_count == 1
+    assert h.total_amount_tomans == 66000
+    assert "https://tapsi.food" in h.web_checkout_url
+    assert h.deep_link_url == "tapsi://food/cart"
