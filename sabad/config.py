@@ -9,6 +9,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def get_config(key: str, default: str = "") -> str:
+    """
+    Unified secrets and configuration resolver.
+    Checks Streamlit secrets (st.secrets) first, falling back to environment variables.
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
+
 # Base project directory
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -17,20 +32,24 @@ SESSIONS_DIR = BASE_DIR / ".sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
 
 # Geolocation context (Default: Tehran - Keshavarz Boulevard / Yousef Abad)
-DEFAULT_LATITUDE = float(os.getenv("LATITUDE", os.getenv("DEFAULT_LATITUDE", "35.715298")))
-DEFAULT_LONGITUDE = float(os.getenv("LONGITUDE", os.getenv("DEFAULT_LONGITUDE", "51.404343")))
+DEFAULT_LATITUDE = float(get_config("LATITUDE", get_config("DEFAULT_LATITUDE", "35.715298")))
+DEFAULT_LONGITUDE = float(get_config("LONGITUDE", get_config("DEFAULT_LONGITUDE", "51.404343")))
 
 # Platform API Base URLs
-SNAPP_MARKET_BASE_URL = os.getenv("SNAPP_MARKET_BASE_URL", "https://svc.snapp.market")
-DIGIKALA_JET_BASE_URL = os.getenv("DIGIKALA_JET_BASE_URL", "https://api.digikalajet.ir")
-OKALA_BASE_URL = os.getenv("OKALA_BASE_URL", "https://apigateway.okala.com")
+SNAPP_MARKET_BASE_URL = get_config("SNAPP_MARKET_BASE_URL", "https://svc.snapp.market")
+DIGIKALA_JET_BASE_URL = get_config("DIGIKALA_JET_BASE_URL", "https://api.digikalajet.ir")
+OKALA_BASE_URL = get_config("OKALA_BASE_URL", "https://apigateway.okala.com")
 
 # Network timeouts (seconds)
-HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "12.0"))
+HTTP_TIMEOUT = float(get_config("HTTP_TIMEOUT", "12.0"))
+
+# Gemini LLM Configuration for Persian semantic parsing
+GEMINI_API_KEY = get_config("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = get_config("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
 # Optimizer defaults (in Tomans)
 # Coordination penalty for receiving multiple deliveries (friction cost)
-DEFAULT_SPLIT_PENALTY_TOMANS = int(os.getenv("SPLIT_PENALTY_TOMANS", "25000"))
+DEFAULT_SPLIT_PENALTY_TOMANS = int(get_config("SPLIT_PENALTY_TOMANS", "25000"))
 
 # Default Minimum Order Value (MOV) fallback if store rules are missing
 DEFAULT_MOV_TOMANS = {
@@ -68,3 +87,23 @@ OKALA_HEADERS = {
     "Origin": "https://www.okala.com",
     "Referer": "https://www.okala.com/",
 }
+
+__all__ = [
+    "get_config",
+    "BASE_DIR",
+    "SESSIONS_DIR",
+    "DEFAULT_LATITUDE",
+    "DEFAULT_LONGITUDE",
+    "SNAPP_MARKET_BASE_URL",
+    "DIGIKALA_JET_BASE_URL",
+    "OKALA_BASE_URL",
+    "HTTP_TIMEOUT",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "DEFAULT_SPLIT_PENALTY_TOMANS",
+    "DEFAULT_MOV_TOMANS",
+    "COMMON_BROWSER_HEADERS",
+    "SNAPP_HEADERS",
+    "JET_HEADERS",
+    "OKALA_HEADERS",
+]

@@ -61,3 +61,44 @@ Provide a Streamlit web application featuring:
 ### Execution & UI
 - [ ] Streamlit interface runs smoothly with live connection status, real-time search progress, interactive audit tables, and responsive layout.
 - [ ] Cart dispatcher populates remote carts on target stores and yields working checkout links.
+
+
+## 2026-10-09T15:53:37Z
+
+Fix pricing normalization and SKU matching discrepancies across grocery stores in Sabad, provide transparent itemized calculation audit views for users, and prepare the app for public deployment on Streamlit Community Cloud.
+
+Working directory: /Users/sotoon/personal/Sabad
+Integrity mode: development
+
+## Requirements
+
+### R1. Store Pricing & Currency Normalization
+Audit and standardize currency conversion across all store adapters (SnappMarket, Digikala Jet, and Okala) so that base prices, discounts, delivery fees, and minimum order values are consistently and correctly represented in Tomans without 10x deflation or inflation discrepancies.
+
+### R2. Strict SKU Matching & Attribute Verification
+Enhance the product matching engine to accurately parse Persian unit suffixes (including "کیلوگرمی", "لیتری", "گرمی", "میلی‌لیتر") without regex boundary failures. Enforce strict compatibility checks that reject incompatible sizes (e.g. matching 1kg when 4L is requested) and incompatible product types (e.g. flavored milk when unflavored cow's milk is specified).
+
+### R3. Transparent Calculation Breakdown & Itemized Audit UI
+Provide an interactive, detailed breakdown UI ("روند محاسبات و جزئیات اقلام") that allows users to inspect exactly which SKU was matched for each requested item in each store, along with matched volume, unit price, quantity, line total, discounts, and delivery tier breakdown.
+
+### R4. Streamlit Community Cloud Deployment Preparation
+Prepare the repository for 1-click public deployment on Streamlit Community Cloud, ensuring `requirements.txt`, environment variables, session handling, and startup scripts are fully configured for public web access.
+
+## Acceptance Criteria
+
+### Pricing & Unit Precision
+- [ ] Programmatic test confirms SnappMarket, Digikala Jet, and Okala prices for staple test products (e.g. milk, cheese, dishwashing liquid) are aligned in the same currency unit (Tomans) without 10x discrepancies.
+- [ ] Delivery fees and minimum order values (MOV) correctly reflect store-specific live terms.
+
+### Matching & Volume Accuracy
+- [ ] Volume/weight extraction correctly parses "۱ کیلوگرمی", "۴ لیتری", "۳۵۰ گرمی", and "۹۵۵ میلی‌لیتر".
+- [ ] Matching 4L dishwashing liquid strictly excludes 1kg variants.
+- [ ] Matching plain milk ("شیر پرچرب") strictly excludes flavored varieties (e.g. "شیر طالبی", "شیر کاکائو").
+
+### Transparency & User Experience
+- [ ] The web interface displays a clear, expandable table/breakdown for each store showing: requested item, matched catalog product title, unit price, quantity, line cost, and delivery fee calculation.
+- [ ] Discrepancies or missing items are clearly highlighted with reasons.
+
+### Stability & Verification
+- [ ] Automated test suite (`pytest`) covering parser, matcher, adapters, and optimizer passes with 100% success.
+- [ ] The app launches cleanly and runs without errors.

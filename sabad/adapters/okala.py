@@ -82,12 +82,11 @@ class OkalaAdapter(BaseStoreAdapter):
                         ddata = details_resp.json().get("data", {})
                         min_order_rials = ddata.get("minimumOrder")
                         if min_order_rials:
-                            mov_tomans = float(min_order_rials) / 10.0
+                            mov_tomans = self.rials_to_tomans(min_order_rials, fallback=DEFAULT_MOV_TOMANS["okala"])
                         is_open = ddata.get("isActive", True) and ddata.get("isExist", True)
                         
                         raw_cost = ddata.get("cost")
-                        if raw_cost is not None and float(raw_cost) > 0:
-                            delivery_fee = float(raw_cost) / 10.0 if float(raw_cost) > 1000 else float(raw_cost)
+                        delivery_fee = self.rials_to_tomans(raw_cost, fallback=25000.0)
 
                     tiers = [
                         DeliveryTier(min_subtotal=0, max_subtotal=400000, fee=delivery_fee),
@@ -143,16 +142,43 @@ class OkalaAdapter(BaseStoreAdapter):
                 entities = payload.get("entities", [])
                 
                 for e in entities:
-                    price_rials = float(e.get("price", 0))
-                    discount_pct = float(e.get("discountPercent", 0))
-                    base_price_tomans = price_rials / 10.0
-                    
-                    discount_tomans = base_price_tomans * (discount_pct / 100.0)
-                    selling_price_tomans = max(1.0, base_price_tomans - discount_tomans)
+                    raw_price = e.get("price")
+                    base_price_tomans = self.rials_to_tomans(raw_price, fallback=0.0)
+
+                    raw_pct = e.get("discountPercent")
+                    try:
+                        discount_pct = float(raw_pct) if raw_pct is not None else 0.0
+                    except (ValueError, TypeError):
+                        discount_pct = 0.0
+
+                    ok_price_raw = e.get("okPrice")
+                    if ok_price_raw is not None:
+                        try:
+                            ok_val = float(ok_price_raw)
+                            selling_price_tomans = self.rials_to_tomans(ok_val, fallback=0.0) if ok_val > 0 else (
+                                max(1.0, base_price_tomans - base_price_tomans * (discount_pct / 100.0)) if base_price_tomans > 0 else 0.0
+                            )
+                        except (ValueError, TypeError):
+                            discount_tomans = base_price_tomans * (discount_pct / 100.0)
+                            selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
+                    else:
+                        discount_tomans = base_price_tomans * (discount_pct / 100.0)
+                        selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
+
+                    if base_price_tomans > 0 and selling_price_tomans > 0 and discount_pct == 0.0 and base_price_tomans > selling_price_tomans:
+                        discount_pct = round(((base_price_tomans - selling_price_tomans) / base_price_tomans) * 100.0, 1)
 
                     product_id = str(e.get("id"))
                     name = e.get("name") or e.get("highlightName") or ""
                     img = e.get("imageUrl") or ""
+
+                    quantity_val = e.get("quantity")
+                    try:
+                        has_quantity = int(quantity_val) > 0 if quantity_val is not None else True
+                    except (ValueError, TypeError):
+                        has_quantity = True
+
+                    is_in_stock = has_quantity and base_price_tomans > 0
 
                     items.append(StoreItem(
                         platform=self.platform_name,
@@ -164,7 +190,7 @@ class OkalaAdapter(BaseStoreAdapter):
                         discount_price=selling_price_tomans,
                         discount_percent=discount_pct,
                         is_flash_deal=discount_pct >= 25.0,
-                        is_in_stock=int(e.get("quantity", 1)) > 0,
+                        is_in_stock=is_in_stock,
                         image_url=img
                     ))
         except Exception as err:
@@ -186,11 +212,39 @@ class OkalaAdapter(BaseStoreAdapter):
             if resp.status_code == 200:
                 entities = resp.json().get("entities", [])
                 for e in entities:
-                    price_rials = float(e.get("price", 0))
-                    discount_pct = float(e.get("discountPercent", 0))
-                    base_t = price_rials / 10.0
-                    disc_t = base_t * (discount_pct / 100.0)
-                    sell_t = max(1.0, base_t - disc_t)
+                    raw_price = e.get("price")
+                    base_t = self.rials_to_tomans(raw_price, fallback=0.0)
+
+                    raw_pct = e.get("discountPercent")
+                    try:
+                        discount_pct = float(raw_pct) if raw_pct is not None else 0.0
+                    except (ValueError, TypeError):
+                        discount_pct = 0.0
+
+                    ok_price_raw = e.get("okPrice")
+                    if ok_price_raw is not None:
+                        try:
+                            ok_val = float(ok_price_raw)
+                            sell_t = self.rials_to_tomans(ok_val, fallback=0.0) if ok_val > 0 else (
+                                max(1.0, base_t - base_t * (discount_pct / 100.0)) if base_t > 0 else 0.0
+                            )
+                        except (ValueError, TypeError):
+                            disc_t = base_t * (discount_pct / 100.0)
+                            sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
+                    else:
+                        disc_t = base_t * (discount_pct / 100.0)
+                        sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
+
+                    if base_t > 0 and sell_t > 0 and discount_pct == 0.0 and base_t > sell_t:
+                        discount_pct = round(((base_t - sell_t) / base_t) * 100.0, 1)
+
+                    quantity_val = e.get("quantity")
+                    try:
+                        has_quantity = int(quantity_val) > 0 if quantity_val is not None else True
+                    except (ValueError, TypeError):
+                        has_quantity = True
+
+                    is_in_stock = has_quantity and base_t > 0
 
                     deals.append(StoreItem(
                         platform=self.platform_name,
@@ -201,7 +255,7 @@ class OkalaAdapter(BaseStoreAdapter):
                         discount_price=sell_t,
                         discount_percent=discount_pct,
                         is_flash_deal=True,
-                        is_in_stock=int(e.get("quantity", 1)) > 0,
+                        is_in_stock=is_in_stock,
                         image_url=e.get("imageUrl") or ""
                     ))
         except Exception as err:

@@ -10,6 +10,17 @@ from sabad.models.dispatch import CartItemMutation, CartMutationResult
 
 class BaseStoreAdapter(ABC):
     """Unified interface for SnappMarket, Digikala Jet, and Okala."""
+
+    @staticmethod
+    def rials_to_tomans(rials: Optional[float], fallback: float = 0.0) -> float:
+        """Converts Rials to Tomans safely handling None, strings, or invalid inputs."""
+        if rials is None:
+            return fallback
+        try:
+            val = float(rials)
+            return round(val / 10.0, 1) if val > 0 else fallback
+        except (ValueError, TypeError):
+            return fallback
     
     @property
     @abstractmethod

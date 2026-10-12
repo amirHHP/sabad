@@ -49,9 +49,9 @@ class SnappMarketAdapter(BaseStoreAdapter):
                     vendor_id = str(vdata.get("id", "snapp_default"))
                     title = vdata.get("title", "سوپرمارکت اسنپ")
                     
-                    # SnappMarket MOV is returned in Rials; convert to Tomans
-                    mov_rials = vdata.get("minimumOrderValue", 0)
-                    mov_tomans = mov_rials / 10.0 if mov_rials > 0 else DEFAULT_MOV_TOMANS["snapp_market"]
+                    # SnappMarket MOV is returned in Tomans
+                    raw_mov = vdata.get("minimumOrderValue", 0)
+                    mov_tomans = float(raw_mov) if raw_mov and float(raw_mov) > 0 else DEFAULT_MOV_TOMANS["snapp_market"]
 
                     # Live delivery fee from API (in Tomans)
                     raw_fee = vdata.get("deliveryFee")
@@ -102,12 +102,20 @@ class SnappMarketAdapter(BaseStoreAdapter):
                     vendor_id = str(vendor.get("id", ""))
                     products = vendor.get("products", [])
                     for p in products:
-                        # Snapp API gives price & discount in Rials -> convert to Tomans
-                        price_rials = float(p.get("price", 0))
-                        discount_rials = float(p.get("discount", 0))
-                        base_price_tomans = price_rials / 10.0
-                        discount_tomans = discount_rials / 10.0
-                        selling_price_tomans = max(1.0, base_price_tomans - discount_tomans)
+                        # Snapp API gives price & discount in Tomans
+                        raw_price = p.get("price")
+                        try:
+                            base_price_tomans = float(raw_price) if raw_price is not None else 0.0
+                        except (ValueError, TypeError):
+                            base_price_tomans = 0.0
+
+                        raw_discount = p.get("discount")
+                        try:
+                            discount_tomans = float(raw_discount) if raw_discount is not None else 0.0
+                        except (ValueError, TypeError):
+                            discount_tomans = 0.0
+
+                        selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
                         
                         pct = (discount_tomans / base_price_tomans * 100.0) if base_price_tomans > 0 else 0.0
                         is_flash = pct >= 25.0
@@ -117,9 +125,15 @@ class SnappMarketAdapter(BaseStoreAdapter):
                         if imgs and isinstance(imgs, list):
                             thumb = imgs[0].get("thumb") or imgs[0].get("main") or ""
 
-                        # Stock availability from real API field
+                        # Stock availability from real API field; guard against price <= 0 or missing prices
                         stock_val = p.get("stock")
-                        is_in_stock = int(stock_val) > 0 if stock_val is not None else True
+                        try:
+                            is_in_stock = int(stock_val) > 0 if stock_val is not None else True
+                        except (ValueError, TypeError):
+                            is_in_stock = True
+
+                        if base_price_tomans <= 0 or raw_price is None:
+                            is_in_stock = False
 
                         items.append(StoreItem(
                             platform=self.platform_name,

@@ -48,6 +48,105 @@ def test_parse_multi_item_basket():
     assert basket.items[2].name == "مایع ظرفشویی"
 
 
+import os
+import sabad.config as config
+_has_gemini_key = bool(os.getenv("GEMINI_API_KEY") or getattr(config, "GEMINI_API_KEY", ""))
+
+
+@pytest.mark.skipif(not _has_gemini_key, reason="GEMINI_API_KEY not configured or unavailable")
+def test_gemini_semantic_parser_live():
+    from sabad.normalizer.gemini_parser import parse_grocery_input_gemini
+    text = "دو تا شیر پرچرب کاله یک لیتری و یه مایع ظرفشویی پریل ۴ لیتری"
+    basket = parse_grocery_input_gemini(text)
+    assert basket is not None
+    assert len(basket.items) == 2
+    assert basket.items[0].name == "شیر"
+    assert basket.items[0].brand == "کاله"
+    assert basket.items[0].quantity == 2
+    assert basket.items[0].volume_weight == 1.0
+    assert basket.items[0].unit == "لیتر"
+    assert basket.items[1].name == "مایع ظرفشویی"
+    assert basket.items[1].brand == "پریل"
+
+
+def test_gemini_fallback_on_invalid_key():
+    from sabad.normalizer.gemini_parser import parse_grocery_input_gemini
+    # Invalid key returns None
+    result = parse_grocery_input_gemini("دو تا شیر کاله", api_key="INVALID_KEY")
+    assert result is None
+    # Main parser falls back smoothly to rule-based
+    fallback_basket = parse_grocery_input("دو تا شیر کاله", use_llm=False)
+    assert len(fallback_basket.items) == 1
+    assert fallback_basket.items[0].name == "شیر"
+
+
+def test_parse_grocery_input_signature_compatibility():
+    """Validates that parse_grocery_input accepts positional, keyword, and alias arguments."""
+    text = "دو تا شیر کاله"
+
+    # Default invocation
+    b1 = parse_grocery_input(text)
+    assert len(b1.items) == 1
+
+    # Positional use_llm=False
+    b2 = parse_grocery_input(text, False)
+    assert len(b2.items) == 1
+
+    # Keyword use_llm=False
+    b3 = parse_grocery_input(text, use_llm=False)
+    assert len(b3.items) == 1
+
+    # Legacy alias use_ai=False
+    b4 = parse_grocery_input(text, use_ai=False)
+    assert len(b4.items) == 1
+
+    # Tolerant to extra kwargs and args (prevents unexpected keyword argument crashes)
+    b5 = parse_grocery_input(text, False, "extra_pos", unknown_kwarg=42)
+    assert len(b5.items) == 1
+
+
+def test_importlib_reload_and_cache_resilience():
+    """Simulates Streamlit hot-reloading submodules and verifies signature stability."""
+    import importlib
+    import sabad.normalizer.parser as parser_mod
+    import sabad.normalizer as normalizer_pkg
+    from app import safe_parse_grocery_input
+
+    # Reload modules like Streamlit does
+    importlib.reload(parser_mod)
+    importlib.reload(normalizer_pkg)
+
+    # Invoke via safe_parse_grocery_input
+    basket = safe_parse_grocery_input("یه ماست سون کاله", use_ai=False)
+    assert len(basket.items) == 1
+    assert basket.items[0].name == "ماست"
+
+
+def test_legacy_signature_fallback_simulation():
+    """Simulates encountering a legacy in-memory function signature without use_llm parameter."""
+    import inspect
+
+    def legacy_parse(raw_text: str):
+        return parse_grocery_input(raw_text, use_llm=False)
+
+    sig = inspect.signature(legacy_parse)
+    assert "use_llm" not in sig.parameters
+
+    # Verify fallback logic
+    user_input = "یه پنیر ویلی"
+    use_ai = True
+    try:
+        if "use_llm" in sig.parameters:
+            basket = legacy_parse(user_input, use_llm=use_ai)
+        else:
+            basket = legacy_parse(user_input)
+    except TypeError:
+        basket = legacy_parse(user_input)
+
+    assert len(basket.items) == 1
+    assert basket.items[0].name == "پنیر"
+
+
 def test_strict_volume_matching():
     # 1L should NOT match 200ml
     assert is_volume_compatible(1.0, "لیتر", "شیر کم چرب کاله 1 لیتری") is True

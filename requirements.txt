@@ -5,4 +5,5 @@ pulp>=2.8.0
 scipy>=1.13.0
 rapidfuzz>=3.8.0
 pytest>=8.0.0
+pytest-asyncio>=0.23.0
 python-dotenv>=1.0.0

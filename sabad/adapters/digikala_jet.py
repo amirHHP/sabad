@@ -59,9 +59,9 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                     # Extract live delivery fees from Jet shop data
                     delivery_info = shop.get("delivery", {})
                     raw_cost_rials = delivery_info.get("cost")
-                    cost_tomans = float(raw_cost_rials) / 10.0 if raw_cost_rials is not None else 29000.0
+                    cost_tomans = self.rials_to_tomans(raw_cost_rials, fallback=29000.0)
                     free_price_rials = delivery_info.get("free_shipping_price")
-                    free_thresh_tomans = float(free_price_rials) / 10.0 if free_price_rials else 450000.0
+                    free_thresh_tomans = self.rials_to_tomans(free_price_rials, fallback=450000.0)
 
                     tiers = [
                         DeliveryTier(min_subtotal=0, max_subtotal=free_thresh_tomans, fee=cost_tomans),
@@ -103,14 +103,40 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                 results = payload.get("data", {}).get("result", [])
                 
                 for r in results:
-                    price_info = r.get("price") or {}
-                    price_rials = float(price_info.get("price", 0))
-                    discount_rials = float(price_info.get("discount", 0))
-                    pct = float(price_info.get("discount_percentage", 0))
-                    
-                    base_price_tomans = price_rials / 10.0
-                    discount_tomans = discount_rials / 10.0
-                    selling_price_tomans = max(1.0, base_price_tomans - discount_tomans)
+                    stock_obj = r.get("stock")
+                    if isinstance(stock_obj, dict):
+                        has_stock = bool(stock_obj.get("has_stock", False))
+                    else:
+                        has_stock = bool(r.get("has_stock", r.get("is_in_stock", False)))
+
+                    price_info = r.get("price")
+                    if isinstance(price_info, dict):
+                        raw_price = price_info.get("price")
+                        raw_discount = price_info.get("discount")
+                        base_price_tomans = self.rials_to_tomans(raw_price, fallback=0.0)
+                        discount_tomans = self.rials_to_tomans(raw_discount, fallback=0.0)
+                        raw_pct = price_info.get("discount_percentage")
+                        try:
+                            pct = float(raw_pct) if raw_pct is not None else 0.0
+                        except (ValueError, TypeError):
+                            pct = 0.0
+                        if pct == 0.0 and base_price_tomans > 0 and discount_tomans > 0:
+                            pct = (discount_tomans / base_price_tomans) * 100.0
+                    else:
+                        price_info = None
+                        base_price_tomans = 0.0
+                        discount_tomans = 0.0
+                        pct = 0.0
+
+                    if base_price_tomans > 0:
+                        selling_price_tomans = max(1.0, base_price_tomans - discount_tomans)
+                    else:
+                        selling_price_tomans = 0.0
+
+                    if (not has_stock) or (price_info is None) or (base_price_tomans <= 0):
+                        is_in_stock = False
+                    else:
+                        is_in_stock = True
 
                     shop_id = str(r.get("shop_id") or r.get("shop", {}).get("id") or "jet_default")
                     product_id = str(r.get("id") or r.get("product_id"))
@@ -128,12 +154,14 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                         discount_price=selling_price_tomans,
                         discount_percent=round(pct, 1),
                         is_flash_deal=is_flash,
-                        is_in_stock=r.get("status") == "active" or r.get("is_in_stock", True),
+                        is_in_stock=is_in_stock,
                         image_url=media
                     ))
         except Exception as e:
             print(f"Error searching Digikala Jet: {e}")
 
+        # Prioritize in-stock items first while maintaining relevance order
+        items.sort(key=lambda x: not x.is_in_stock)
         return items
 
     async def get_flash_deals(self, lat: float, lng: float) -> List[StoreItem]:
@@ -155,14 +183,31 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                             if post_resp.status_code == 200:
                                 prods = post_resp.json().get("data", {}).get("products", [])
                                 for p in prods:
-                                    price_info = p.get("price") or {}
-                                    price_rials = float(price_info.get("price", 0))
-                                    discount_rials = float(price_info.get("discount", 0))
-                                    pct = float(price_info.get("discount_percentage", 0))
-                                    
-                                    base_t = price_rials / 10.0
-                                    disc_t = discount_rials / 10.0
-                                    sell_t = max(1.0, base_t - disc_t)
+                                    stock_obj = p.get("stock")
+                                    if isinstance(stock_obj, dict):
+                                        has_stock = bool(stock_obj.get("has_stock", True))
+                                    else:
+                                        has_stock = bool(p.get("has_stock", p.get("is_in_stock", True)))
+
+                                    price_info = p.get("price")
+                                    if isinstance(price_info, dict):
+                                        raw_price = price_info.get("price")
+                                        raw_discount = price_info.get("discount")
+                                        base_t = self.rials_to_tomans(raw_price, fallback=0.0)
+                                        disc_t = self.rials_to_tomans(raw_discount, fallback=0.0)
+                                        raw_pct = price_info.get("discount_percentage")
+                                        try:
+                                            pct = float(raw_pct) if raw_pct is not None else 0.0
+                                        except (ValueError, TypeError):
+                                            pct = 0.0
+                                    else:
+                                        price_info = None
+                                        base_t = 0.0
+                                        disc_t = 0.0
+                                        pct = 0.0
+
+                                    sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
+                                    in_stock = has_stock and (price_info is not None) and (base_t > 0)
 
                                     deals.append(StoreItem(
                                         platform=self.platform_name,
@@ -174,7 +219,7 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                                         discount_price=sell_t,
                                         discount_percent=round(pct, 1),
                                         is_flash_deal=True,
-                                        is_in_stock=True,
+                                        is_in_stock=in_stock,
                                         image_url=p.get("media") or ""
                                     ))
                                 break

@@ -31,10 +31,19 @@ PERSIAN_WORD_NUMBERS = {
 
 
 def to_ascii_digits(text: str) -> str:
-    """Converts all Persian and Arabic digits in text to standard ASCII digits."""
+    """Converts all Persian and Arabic digits in text to standard ASCII digits.
+    Also handles Persian slash '/' or '٫' as decimal separator in numbers (e.g. '۱/۵' -> '1.5').
+    """
     if not text:
         return ""
-    return text.translate(DIGIT_TRANS)
+    converted = text.translate(DIGIT_TRANS)
+    # Convert slash '/' or momayyez '٫' between digits to decimal point '.'
+    converted = re.sub(r'(?<=\d)[/٫](?=\d)', '.', converted)
+    return converted
+
+
+# Alias for compatibility
+to_english_digits = to_ascii_digits
 
 
 def clean_persian_text(text: str) -> str:

@@ -6,6 +6,20 @@ Sabad operates on **100% live networks** without mock stubs or synthetic databas
 
 ---
 
+## 📚 Spec-Oriented Development (SOD) — Single Source of Truth
+
+Sabad is built following the **Spec-Oriented Development (SOD)** paradigm. Complete architectural specifications, API contracts, currency normalization rules, and mathematical formulations are strictly documented in [`specs/`](specs/):
+
+- 🏛️ [**Spec 01: System Architecture & Dataflow**](specs/01-architecture-and-dataflow.md)
+- 📦 [**Spec 02: Data Models & Domain Contracts**](specs/02-data-models-and-contracts.md)
+- 🔌 [**Spec 03: Store Adapters & Live API Contracts**](specs/03-store-adapters-api.md) *(Includes critical Toman vs Rial rules)*
+- 🔍 [**Spec 04: Persian NLP & Strict SKU Matcher**](specs/04-nlp-and-sku-matching.md) *(Regex boundaries, volume & flavor guards)*
+- 🧮 [**Spec 05: Mathematical Optimization & Marketing Trap Auditor**](specs/05-optimization-engine.md) *(MILP formulation)*
+- 🖥️ [**Spec 06: UI Architecture & Calculation Transparency**](specs/06-ui-and-transparency.md) *(4-Tab 9-column audit views)*
+- 🧪 [**Spec 07: Testing Strategy & Cloud Deployment**](specs/07-testing-and-deployment.md) *(198 pytest tests & Streamlit Cloud)*
+
+---
+
 ## 🏛️ System Architecture
 
 ```mermaid

@@ -33,3 +33,4 @@ class ParsedGroceryBasket(BaseModel):
     """A collection of normalized grocery items ready for catalog search."""
     raw_input: str
     items: List[ParsedGroceryItem] = Field(default_factory=list)
+    engine: str = Field(default="rule_based", description="Parser engine used (gemini or rule_based)")
