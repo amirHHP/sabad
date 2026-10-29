@@ -4,6 +4,7 @@ Connects directly to live api.tapsi.food endpoints for quick-commerce and grocer
 """
 
 from typing import List, Optional, Dict, Any
+import asyncio
 import urllib.parse
 import httpx
 
@@ -30,6 +31,9 @@ class TapsiMarketAdapter(BaseStoreAdapter):
     _MARKET_TERMS = (
         "مارکت", "سوپر", "هایپر", "فروشگاه", "بقالی", "میوه", "پروتئین",
     )
+    # Prepared-food and non-grocery verticals that dominate the unfiltered search.
+    _NON_GROCERY_TYPE_TERMS = ("رستوران", "کافه", "فست", "آبمیوه", "بستنی", "پت")
+    _FALLBACK_GROCERY_TYPE_IDS = ("5", "13", "6", "3", "12", "11")
 
     def __init__(self, base_url: str = TAPSI_MARKET_BASE_URL):
         self.base_url = base_url.rstrip("/")
@@ -189,79 +193,160 @@ class TapsiMarketAdapter(BaseStoreAdapter):
             ]
         )
 
-    async def search(self, query: str, lat: float, lng: float) -> List[StoreItem]:
-        """Queries live catalog for the given search term and location."""
+    def _parse_search_payload(self, payload: Any) -> List[StoreItem]:
+        """Turn a product-search payload into grocery items, dropping restaurants."""
+        if not isinstance(payload, dict):
+            return []
+        results = payload.get("data", [])
+        if not results and isinstance(payload.get("products"), list):
+            results = payload.get("products")
+        if isinstance(results, dict):
+            results = results.get("items") or results.get("products") or results.get("results") or results.get("data") or []
+        if not isinstance(results, list):
+            return []
+
+        items: List[StoreItem] = []
+        seen_ids = set()
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            product_info = row.get("productInfo") if isinstance(row.get("productInfo"), dict) else {}
+            vendor_info = row.get("vendorInfo") if isinstance(row.get("vendorInfo"), dict) else {}
+            variants = row.get("subDocs") if isinstance(row.get("subDocs"), list) else []
+            candidates = [variant for variant in variants if isinstance(variant, dict)]
+            if product_info:
+                candidates.append(product_info)
+            if not candidates and (row.get("name") or row.get("price") is not None):
+                candidates = [row]
+            for variant in candidates:
+                # Shared Food/Market discovery can return a different market
+                # branch than the nearby vendor. Keep the restaurant deny-list,
+                # but do not drop a grocery result only because the codes differ.
+                if not self._is_market_vendor(vendor_info, variant, enforce_cached_vendor=False):
+                    continue
+                base_price = float(variant.get("price") or 0.0)
+                discount_price = float(variant.get("priceAfterDiscount") or base_price or 0.0)
+                if discount_price <= 0 and base_price > 0:
+                    discount_price = base_price
+                raw_pct = variant.get("discountRatio")
+                try:
+                    pct = float(raw_pct) if raw_pct is not None else 0.0
+                except (ValueError, TypeError):
+                    pct = 0.0
+                if pct == 0.0 and base_price > discount_price > 0:
+                    pct = round(((base_price - discount_price) / base_price) * 100.0, 1)
+
+                vendor_status = vendor_info.get("vendorStatus", True)
+                is_in_stock = (discount_price > 0) and (vendor_status is True or vendor_status == "Open")
+                product_id = str(variant.get("id") or variant.get("headerId") or row.get("id") or "")
+                if product_id in seen_ids:
+                    continue
+                seen_ids.add(product_id)
+                items.append(StoreItem(
+                    platform=self.platform_name,
+                    store_id=str(vendor_info.get("vendorCode") or self._cached_store_id or "tapsi_market"),
+                    product_id=product_id,
+                    title=variant.get("name") or product_info.get("name") or "",
+                    brand=None,
+                    base_price=base_price,
+                    discount_price=discount_price,
+                    discount_percent=round(pct, 1),
+                    is_flash_deal=pct >= 20.0,
+                    is_in_stock=is_in_stock,
+                    image_url=self.first_url(variant.get("images") or variant.get("image") or variant.get("imageUrl")),
+                    product_url=self.first_url(variant.get("url") or variant.get("productUrl") or variant.get("product_url") or variant.get("webUrl") or variant.get("link")),
+                ))
+        items.sort(key=lambda item: not item.is_in_stock)
+        return items
+
+    @classmethod
+    def _grocery_type_ids(cls, payload: Any) -> List[str]:
+        """Keep grocery verticals from a facets response and drop restaurants."""
+        data = payload.get("data") if isinstance(payload, dict) else None
+        business_types = data.get("businessTypes") if isinstance(data, dict) else None
+        if not isinstance(business_types, list):
+            return []
+        ids: List[str] = []
+        for entry in business_types:
+            if not isinstance(entry, dict):
+                continue
+            label = f"{entry.get('faName') or ''} {entry.get('name') or ''}"
+            if any(term in label for term in cls._NON_GROCERY_TYPE_TERMS):
+                continue
+            try:
+                count = int(entry.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if count <= 0 or entry.get("id") is None:
+                continue
+            type_id = str(entry.get("id"))
+            if type_id not in ids:
+                ids.append(type_id)
+        return ids[:6]
+
+    async def _search_business_type(self, query: str, lat: float, lng: float, business_type_id: str) -> List[StoreItem]:
+        """Search one grocery vertical. The API ignores a list of type ids."""
         encoded_q = urllib.parse.quote(query)
         url = (
             f"{self.base_url}/v1/api/search-discovery/Search/product-search"
-            f"?latitude={lat}&longitude={lng}&query={encoded_q}&pageNumber=1&pageSize=24"
+            f"?latitude={lat}&longitude={lng}&query={encoded_q}"
+            f"&businessTypeIds={urllib.parse.quote(business_type_id)}&pageNumber=1&pageSize=24"
         )
-        items: List[StoreItem] = []
-
         try:
             resp = await self.client.get(url)
+            if resp.status_code != 200:
+                return []
+            return self._parse_search_payload(resp.json())
+        except Exception as exc:
+            self.note_store_error("search", exc, reraise_timeout=True)
+            return []
+
+    async def search(self, query: str, lat: float, lng: float) -> List[StoreItem]:
+        """Queries the grocery verticals of Tapsi's shared discovery API.
+
+        An unfiltered product search returns restaurants first. Those rows are
+        discarded by the market filter, so the basket looks empty even when a
+        protein shop or grocery nearby has the item.
+        """
+        encoded_q = urllib.parse.quote(query)
+        facet_url = (
+            f"{self.base_url}/v1/api/search-discovery/Search/facets"
+            f"?latitude={lat}&longitude={lng}&query={encoded_q}"
+        )
+        payload: Dict[str, Any] = {}
+        try:
+            resp = await self.client.get(facet_url)
             if resp.status_code == 200:
-                payload = resp.json()
-                results = payload.get("data", [])
-                if isinstance(results, dict):
-                    results = results.get("items") or results.get("products") or results.get("results") or results.get("data") or []
-                if not isinstance(results, list):
-                    results = []
-                for r in results:
-                    p_info = r.get("productInfo", {})
-                    v_info = r.get("vendorInfo", {})
-                    # Product discovery is shared by Food and Market and may
-                    # return a market branch code different from the nearby
-                    # vendor code.  Keep the restaurant deny-list active, but
-                    # do not drop every grocery result on a code mismatch.
-                    if not self._is_market_vendor(v_info, p_info, enforce_cached_vendor=False):
-                        continue
+                body = resp.json()
+                payload = body if isinstance(body, dict) else {}
+        except Exception as exc:
+            self.note_store_error("search", exc, reraise_timeout=True)
 
-                    base_price = float(p_info.get("price") or 0.0)
-                    discount_price = float(p_info.get("priceAfterDiscount") or base_price or 0.0)
-                    if discount_price <= 0 and base_price > 0:
-                        discount_price = base_price
+        facet_data = payload.get("data")
+        if isinstance(facet_data, dict) and "businessTypes" in facet_data:
+            type_ids = self._grocery_type_ids(payload)
+        else:
+            # Fixtures and the previous product-search contract return rows directly.
+            direct_items = self._parse_search_payload(payload)
+            if direct_items:
+                return direct_items
+            type_ids = list(self._FALLBACK_GROCERY_TYPE_IDS)
 
-                    raw_pct = p_info.get("discountRatio")
-                    try:
-                        pct = float(raw_pct) if raw_pct is not None else 0.0
-                    except (ValueError, TypeError):
-                        pct = 0.0
-
-                    if pct == 0.0 and base_price > discount_price > 0:
-                        pct = round(((base_price - discount_price) / base_price) * 100.0, 1)
-
-                    # In-stock check: price must be strictly positive and vendor active
-                    v_status = v_info.get("vendorStatus", True)
-                    is_in_stock = (discount_price > 0) and (v_status is True or v_status == "Open")
-
-                    image_url = self.first_url(p_info.get("images") or p_info.get("image") or p_info.get("imageUrl"))
-
-                    p_id = str(p_info.get("id") or p_info.get("headerId") or r.get("id") or "")
-                    v_code = str(v_info.get("vendorCode") or self._cached_store_id or "tapsi_market")
-
-                    is_flash = pct >= 20.0
-
-                    items.append(StoreItem(
-                        platform=self.platform_name,
-                        store_id=v_code,
-                        product_id=p_id,
-                        title=p_info.get("name", ""),
-                        brand=None,
-                        base_price=base_price,
-                        discount_price=discount_price,
-                        discount_percent=round(pct, 1),
-                        is_flash_deal=is_flash,
-                        is_in_stock=is_in_stock,
-                        image_url=image_url,
-                        product_url=self.first_url(p_info.get("url") or p_info.get("productUrl") or p_info.get("product_url") or p_info.get("webUrl") or p_info.get("link")),
-                    ))
-        except Exception as e:
-            self.note_store_error("search", e, reraise_timeout=True)
-
-        # Prioritize in-stock items first
-        items.sort(key=lambda x: not x.is_in_stock)
-        return items
+        if not type_ids:
+            return []
+        groups = await asyncio.gather(
+            *(self._search_business_type(query, lat, lng, type_id) for type_id in type_ids)
+        )
+        merged: List[StoreItem] = []
+        seen_ids = set()
+        for group in groups:
+            for item in group:
+                if item.product_id in seen_ids:
+                    continue
+                seen_ids.add(item.product_id)
+                merged.append(item)
+        merged.sort(key=lambda item: not item.is_in_stock)
+        return merged
 
     async def get_flash_deals(self, lat: float, lng: float) -> List[StoreItem]:
         """Discovers daily flash deals and promotional items."""

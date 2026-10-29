@@ -16,6 +16,95 @@ from sabad.config import (
 )
 from sabad.models.catalog import StoreItem, StoreInfo, DeliveryTier
 from sabad.models.dispatch import CartItemMutation, CartMutationResult
+from sabad.normalizer.persian_digits import clean_persian_text
+
+# Tokens that do not identify a category on their own.
+_CATEGORY_STOPWORDS = {"و", "از", "با", "یا", "در", "برای"}
+
+
+def _category_tokens(text: str) -> List[str]:
+    """Split a Persian label into matchable words."""
+    cleaned = clean_persian_text(text or "")
+    return [part for part in cleaned.split(" ") if part and part not in _CATEGORY_STOPWORDS]
+
+
+def best_category_slug(categories: List[Dict[str, Any]], query: str) -> Optional[str]:
+    """Pick the Okala category slug whose name best matches a grocery query.
+
+    Text search on Okala now requires a logged-in token. The public catalog is
+    browsed by category slug, so "شیر" has to land on ``milk`` rather than a
+    longer label such as "شیرینی" that merely shares a prefix.
+    """
+    query_tokens = _category_tokens(query)
+    if not query_tokens:
+        return None
+    query_set = set(query_tokens)
+    best_slug: Optional[str] = None
+    best_key = None
+    normalized_query = clean_persian_text(query)
+    for category in categories:
+        name = str(category.get("name") or "")
+        slug = category.get("latinName") or category.get("slug")
+        if not name or not slug:
+            continue
+        category_tokens = _category_tokens(name)
+        if not category_tokens:
+            continue
+        overlap = len(query_set & set(category_tokens))
+        if overlap == 0:
+            continue
+        exact = int(category_tokens == query_tokens or clean_persian_text(name) == normalized_query)
+        extra = len(category_tokens) - overlap
+        key = (overlap, exact, -extra, -len(name))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_slug = str(slug)
+    return best_slug
+
+
+def _flatten_categories(nodes: Any) -> List[Dict[str, Any]]:
+    """Walk the nearby-category tree into a flat name/slug list."""
+    flat: List[Dict[str, Any]] = []
+    if not isinstance(nodes, list):
+        return flat
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("name") and (node.get("latinName") or node.get("slug")):
+            flat.append(node)
+        flat.extend(_flatten_categories(node.get("children")))
+    return flat
+
+
+def _catalog_rows(payload: Any) -> List[Dict[str, Any]]:
+    """Normalize the product shapes Okala has used for search and category pages."""
+    if not isinstance(payload, dict):
+        return []
+    rows: List[Dict[str, Any]] = []
+    entities = payload.get("entities")
+    if isinstance(entities, list):
+        for entry in entities:
+            if not isinstance(entry, dict):
+                continue
+            nested = entry.get("products")
+            if isinstance(nested, list):
+                rows.extend(product for product in nested if isinstance(product, dict))
+            elif entry.get("name") or entry.get("price") is not None:
+                rows.append(entry)
+        if rows:
+            return rows
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [
+            product for product in data
+            if isinstance(product, dict) and (product.get("name") or product.get("price") is not None)
+        ]
+    if isinstance(data, dict):
+        for key in ("entities", "products", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [product for product in value if isinstance(product, dict)]
+    return []
 
 
 class OkalaAdapter(BaseStoreAdapter):
@@ -30,6 +119,7 @@ class OkalaAdapter(BaseStoreAdapter):
         )
         self._cached_store_id: Optional[str] = None
         self._cached_store_title: Optional[str] = None
+        self._category_cache: Optional[List[Dict[str, Any]]] = None
 
     @property
     def platform_name(self) -> str:
@@ -125,152 +215,132 @@ class OkalaAdapter(BaseStoreAdapter):
                 self._cached_store_id = info.store_id
         return self._cached_store_id or "2319"
 
-    async def search(self, query: str, lat: float, lng: float) -> List[StoreItem]:
-        """Queries live Okala catalog for the dynamically resolved store branch."""
-        store_id = await self._ensure_store_id(lat, lng)
-        encoded_q = urllib.parse.quote(query)
-        url = (
-            f"{self.base_url}/api/Search/v1/Product/Search"
-            f"?StoreIds={store_id}&SearchText={encoded_q}&HasQuantity=true&Page=1&Take=20&excludeShoppingCard=false"
-        )
+    def _items_from_payload(self, payload: Any, store_id: str, *, force_flash: bool = False) -> List[StoreItem]:
+        """Map an Okala catalog payload onto store items, in Tomans."""
         items: List[StoreItem] = []
+        for entry in _catalog_rows(payload):
+            raw_price = entry.get("price")
+            base_price_tomans = self.rials_to_tomans(raw_price, fallback=0.0)
 
+            raw_pct = entry.get("discountPercent")
+            try:
+                discount_pct = float(raw_pct) if raw_pct is not None else 0.0
+            except (ValueError, TypeError):
+                discount_pct = 0.0
+
+            ok_price_raw = entry.get("okPrice")
+            if ok_price_raw is not None:
+                try:
+                    ok_val = float(ok_price_raw)
+                    selling_price_tomans = self.rials_to_tomans(ok_val, fallback=0.0) if ok_val > 0 else (
+                        max(1.0, base_price_tomans - base_price_tomans * (discount_pct / 100.0)) if base_price_tomans > 0 else 0.0
+                    )
+                except (ValueError, TypeError):
+                    discount_tomans = base_price_tomans * (discount_pct / 100.0)
+                    selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
+            else:
+                discount_tomans = base_price_tomans * (discount_pct / 100.0)
+                selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
+
+            if base_price_tomans > 0 and selling_price_tomans > 0 and discount_pct == 0.0 and base_price_tomans > selling_price_tomans:
+                discount_pct = round(((base_price_tomans - selling_price_tomans) / base_price_tomans) * 100.0, 1)
+
+            product_id = str(entry.get("id") or entry.get("productId") or "")
+            name = entry.get("name") or entry.get("highlightName") or ""
+            quantity_val = entry.get("quantity")
+            try:
+                has_quantity = int(quantity_val) > 0 if quantity_val is not None else True
+            except (ValueError, TypeError):
+                has_quantity = True
+            row_store = str(entry.get("storeId") or store_id)
+            items.append(StoreItem(
+                platform=self.platform_name,
+                store_id=row_store,
+                product_id=product_id,
+                title=name,
+                brand=None,
+                base_price=base_price_tomans,
+                discount_price=selling_price_tomans,
+                discount_percent=discount_pct,
+                is_flash_deal=True if force_flash else discount_pct >= 25.0,
+                is_in_stock=has_quantity and base_price_tomans > 0,
+                image_url=self.first_url(entry.get("imageUrl") or entry.get("images") or entry.get("image")),
+                product_url=self.first_url(entry.get("url") or entry.get("productUrl") or entry.get("product_url") or entry.get("webUrl") or entry.get("link")),
+            ))
+        return items
+
+    async def _load_categories(self, lat: float, lng: float) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """Return nearby categories, or a catalog payload when the response is already products.
+
+        Recorded fixtures and the retired search endpoint return product rows.
+        The live category tree is cached so a basket does not download it once per item.
+        """
+        if self._category_cache is not None:
+            return self._category_cache, None
+        url = f"{self.base_url}/api/unicorn/v3/categories/nearby?lat={lat}&lon={lng}"
         try:
             resp = await self.client.get(url)
-            if resp.status_code == 200:
-                payload = resp.json()
-                entities = payload.get("entities", [])
-                if not entities and isinstance(payload.get("data"), dict):
-                    data = payload["data"]
-                    entities = data.get("entities") or data.get("products") or data.get("items") or data.get("results") or []
-                if isinstance(entities, dict):
-                    entities = entities.get("items") or entities.get("results") or entities.get("entities") or []
-                if not isinstance(entities, list):
-                    entities = []
-                
-                for e in entities:
-                    raw_price = e.get("price")
-                    base_price_tomans = self.rials_to_tomans(raw_price, fallback=0.0)
+            if resp.status_code != 200:
+                return [], None
+            payload = resp.json()
+        except Exception as err:
+            self.note_store_error("categories", err, reraise_timeout=True)
+            return [], None
 
-                    raw_pct = e.get("discountPercent")
-                    try:
-                        discount_pct = float(raw_pct) if raw_pct is not None else 0.0
-                    except (ValueError, TypeError):
-                        discount_pct = 0.0
+        data = payload.get("data") if isinstance(payload, dict) else None
+        categories = _flatten_categories(data.get("categories") if isinstance(data, dict) else None)
+        if categories:
+            self._category_cache = categories
+            return categories, None
+        if _catalog_rows(payload):
+            return [], payload
+        self._category_cache = []
+        return [], None
 
-                    ok_price_raw = e.get("okPrice")
-                    if ok_price_raw is not None:
-                        try:
-                            ok_val = float(ok_price_raw)
-                            selling_price_tomans = self.rials_to_tomans(ok_val, fallback=0.0) if ok_val > 0 else (
-                                max(1.0, base_price_tomans - base_price_tomans * (discount_pct / 100.0)) if base_price_tomans > 0 else 0.0
-                            )
-                        except (ValueError, TypeError):
-                            discount_tomans = base_price_tomans * (discount_pct / 100.0)
-                            selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
-                    else:
-                        discount_tomans = base_price_tomans * (discount_pct / 100.0)
-                        selling_price_tomans = max(1.0, base_price_tomans - discount_tomans) if base_price_tomans > 0 else 0.0
+    async def search(self, query: str, lat: float, lng: float) -> List[StoreItem]:
+        """Queries the public Okala catalog for the resolved store branch.
 
-                    if base_price_tomans > 0 and selling_price_tomans > 0 and discount_pct == 0.0 and base_price_tomans > selling_price_tomans:
-                        discount_pct = round(((base_price_tomans - selling_price_tomans) / base_price_tomans) * 100.0, 1)
-
-                    product_id = str(e.get("id"))
-                    name = e.get("name") or e.get("highlightName") or ""
-                    img = self.first_url(e.get("imageUrl") or e.get("images") or e.get("image"))
-
-                    quantity_val = e.get("quantity")
-                    try:
-                        has_quantity = int(quantity_val) > 0 if quantity_val is not None else True
-                    except (ValueError, TypeError):
-                        has_quantity = True
-
-                    is_in_stock = has_quantity and base_price_tomans > 0
-
-                    items.append(StoreItem(
-                        platform=self.platform_name,
-                        store_id=store_id,
-                        product_id=product_id,
-                        title=name,
-                        brand=None,
-                        base_price=base_price_tomans,
-                        discount_price=selling_price_tomans,
-                        discount_percent=discount_pct,
-                        is_flash_deal=discount_pct >= 25.0,
-                        is_in_stock=is_in_stock,
-                        image_url=img,
-                        product_url=self.first_url(e.get("url") or e.get("productUrl") or e.get("product_url") or e.get("webUrl") or e.get("link")),
-                    ))
+        ``/api/Search/v1/Product/Search`` now 404s, and the replacement text
+        search requires a customer token. Category pages stay public, so a
+        query is matched to a category slug and read from that store's shelf.
+        """
+        store_id = await self._ensure_store_id(lat, lng)
+        try:
+            categories, direct_catalog = await self._load_categories(lat, lng)
+            if direct_catalog is not None:
+                return self._items_from_payload(direct_catalog, store_id)
+            slug = best_category_slug(categories, query)
+            if not slug:
+                return []
+            encoded_slug = urllib.parse.quote(slug)
+            url = (
+                f"{self.base_url}/api/unicorn/v2/products/store/{store_id}"
+                f"?slug={encoded_slug}&lat={lat}&lon={lng}"
+            )
+            resp = await self.client.get(url)
+            if resp.status_code != 200:
+                return []
+            return self._items_from_payload(resp.json(), store_id)
         except Exception as err:
             self.note_store_error("search", err, reraise_timeout=True)
-
-        return items
+            return []
 
     async def get_flash_deals(self, lat: float, lng: float) -> List[StoreItem]:
         """Fetches timed special discounts from the resolved Okala store."""
         store_id = await self._ensure_store_id(lat, lng)
         url = (
-            f"{self.base_url}/api/Search/v1/Product/Search"
-            f"?StoreIds={store_id}&HasDiscount=true&Page=1&Take=20&excludeShoppingCard=false"
+            f"{self.base_url}/api/carousel/v4/offers/highest-discount"
+            f"?storeId={store_id}&take=20&page=1"
         )
-        deals: List[StoreItem] = []
-
         try:
             resp = await self.client.get(url)
-            if resp.status_code == 200:
-                entities = resp.json().get("entities", [])
-                for e in entities:
-                    raw_price = e.get("price")
-                    base_t = self.rials_to_tomans(raw_price, fallback=0.0)
-
-                    raw_pct = e.get("discountPercent")
-                    try:
-                        discount_pct = float(raw_pct) if raw_pct is not None else 0.0
-                    except (ValueError, TypeError):
-                        discount_pct = 0.0
-
-                    ok_price_raw = e.get("okPrice")
-                    if ok_price_raw is not None:
-                        try:
-                            ok_val = float(ok_price_raw)
-                            sell_t = self.rials_to_tomans(ok_val, fallback=0.0) if ok_val > 0 else (
-                                max(1.0, base_t - base_t * (discount_pct / 100.0)) if base_t > 0 else 0.0
-                            )
-                        except (ValueError, TypeError):
-                            disc_t = base_t * (discount_pct / 100.0)
-                            sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
-                    else:
-                        disc_t = base_t * (discount_pct / 100.0)
-                        sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
-
-                    if base_t > 0 and sell_t > 0 and discount_pct == 0.0 and base_t > sell_t:
-                        discount_pct = round(((base_t - sell_t) / base_t) * 100.0, 1)
-
-                    quantity_val = e.get("quantity")
-                    try:
-                        has_quantity = int(quantity_val) > 0 if quantity_val is not None else True
-                    except (ValueError, TypeError):
-                        has_quantity = True
-
-                    is_in_stock = has_quantity and base_t > 0
-
-                    deals.append(StoreItem(
-                        platform=self.platform_name,
-                        store_id=store_id,
-                        product_id=str(e.get("id")),
-                        title=e.get("name", ""),
-                        base_price=base_t,
-                        discount_price=sell_t,
-                        discount_percent=discount_pct,
-                        is_flash_deal=True,
-                        is_in_stock=is_in_stock,
-                        image_url=self.first_url(e.get("imageUrl") or e.get("images") or e.get("image")),
-                        product_url=self.first_url(e.get("url") or e.get("productUrl") or e.get("product_url") or e.get("webUrl") or e.get("link")),
-                    ))
+            if resp.status_code != 200:
+                return []
+            deals = self._items_from_payload(resp.json(), store_id, force_flash=True)
+            return [deal for deal in deals if deal.discount_percent > 0]
         except Exception as err:
             self.note_store_error("flash_deals", err)
-
-        return deals
+            return []
 
     async def send_otp(self, phone: str) -> Dict[str, Any]:
         """Sends OTP SMS code to the user's phone via Okala customer gateway."""

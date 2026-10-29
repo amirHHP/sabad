@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from sabad.adapters.base import BaseStoreAdapter
 from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
-from sabad.adapters.okala import OkalaAdapter
+from sabad.adapters.okala import OkalaAdapter, best_category_slug
 from sabad.adapters.tapsi_market import TapsiMarketAdapter
 from sabad.models.dispatch import CartItemMutation
 
@@ -236,6 +236,50 @@ class TestOkalaAdapterUnit:
             assert result.success is False
             assert "نشست کاربری" in result.error_message
 
+    def test_category_slug_prefers_exact_name_over_prefix(self):
+        categories = [
+            {"name": "شیرینی", "latinName": "sweets"},
+            {"name": "شیر", "latinName": "milk"},
+            {"name": "شیر کم چرب", "latinName": "low-fat-milk"},
+        ]
+        assert best_category_slug(categories, "شیر") == "milk"
+        assert best_category_slug(categories, "شیر کم چرب") == "low-fat-milk"
+
+    @pytest.mark.asyncio
+    async def test_search_reads_public_category_shelf(self, adapter):
+        categories = {
+            "data": {"categories": [
+                {"name": "شیرینی", "latinName": "sweets", "children": []},
+                {"name": "شیر", "latinName": "milk", "children": []},
+            ]}
+        }
+        shelf = {
+            "data": [{
+                "id": 716,
+                "name": "شیر کم چرب میهن ۱ لیتری",
+                "price": 1590000,
+                "okPrice": 1431000,
+                "discountPercent": 10,
+                "quantity": 4,
+                "storeId": 2223,
+            }]
+        }
+
+        async def fake_get(url, *args, **kwargs):
+            if "categories/nearby" in str(url):
+                return httpx.Response(200, json=categories)
+            return httpx.Response(200, json=shelf)
+
+        adapter._cached_store_id = "2223"
+        with patch.object(adapter.client, "get", new=AsyncMock(side_effect=fake_get)):
+            items = await adapter.search("شیر", 35.7, 51.4)
+
+        assert len(items) == 1
+        assert items[0].product_id == "716"
+        assert items[0].store_id == "2223"
+        assert items[0].base_price == 159000.0
+        assert items[0].discount_price == 143100.0
+
 
 class TestTapsiMarketAdapterUnit:
     @pytest.fixture
@@ -353,3 +397,44 @@ class TestTapsiMarketAdapterUnit:
             result = await adapter.add_to_cart([mutation])
             assert result.success is False
             assert "نشست کاربری" in result.error_message
+
+    @pytest.mark.asyncio
+    async def test_search_skips_restaurants_and_reads_grocery_vertical(self, adapter):
+        facets = {
+            "data": {"businessTypes": [
+                {"id": "1", "faName": "رستوران", "count": 20},
+                {"id": "2", "faName": "کافه", "count": 8},
+                {"id": "5", "faName": "پروتئین", "count": 4},
+            ]}
+        }
+        grocery = {
+            "data": [{
+                "id": "milk-1",
+                "productInfo": {
+                    "id": "milk-1",
+                    "name": "شیر پرچرب ماهشام",
+                    "price": 48000,
+                    "priceAfterDiscount": 48000,
+                },
+                "vendorInfo": {
+                    "vendorCode": "protein-1",
+                    "title": "سام پروتئین",
+                    "vendorStatus": "Open",
+                },
+            }]
+        }
+
+        async def fake_get(url, *args, **kwargs):
+            address = str(url)
+            if "facets" in address:
+                return httpx.Response(200, json=facets)
+            if "businessTypeIds=5" in address:
+                return httpx.Response(200, json=grocery)
+            return httpx.Response(200, json={"data": []})
+
+        with patch.object(adapter.client, "get", new=AsyncMock(side_effect=fake_get)):
+            items = await adapter.search("شیر", 35.7, 51.4)
+
+        assert [item.product_id for item in items] == ["milk-1"]
+        assert items[0].title == "شیر پرچرب ماهشام"
+        assert items[0].store_id == "protein-1"
