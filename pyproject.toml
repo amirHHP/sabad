@@ -11,14 +11,21 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.7.0",
-    "streamlit>=1.35.0",
+    "streamlit>=1.50.0",
     "pulp>=2.8.0",
     "scipy>=1.13.0",
     "rapidfuzz>=3.8.0",
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0",
+    "starlette>=0.37.0",
+    "redis>=5.0.0",
+    "uvicorn>=0.30.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["sabad*"]
+exclude = ["tests*", "api*"]

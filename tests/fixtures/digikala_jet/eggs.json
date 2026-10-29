@@ -1,0 +1,36 @@
+{
+  "data": {
+    "result": [
+      {
+        "id": "e6",
+        "title": "تخم مرغ ۶ عددی",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 900000,
+          "discount": 0,
+          "discount_percentage": 0.0
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "e20",
+        "title": "تخم مرغ ۲۰ عددی",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 2400000,
+          "discount": 400000,
+          "discount_percentage": 16.7
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      }
+    ]
+  }
+}

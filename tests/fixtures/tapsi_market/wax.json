@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "id": "car",
+      "productInfo": {
+        "id": "car",
+        "name": "واکس و شامپو خودرو",
+        "price": 30000,
+        "priceAfterDiscount": 20000,
+        "discountRatio": 33.3,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "shoe",
+      "productInfo": {
+        "id": "shoe",
+        "name": "واکس کفش ساده",
+        "price": 55000,
+        "priceAfterDiscount": 45000,
+        "discountRatio": 18.2,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    }
+  ]
+}

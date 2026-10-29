@@ -39,6 +39,7 @@ class StoreItem(BaseModel):
     is_in_stock: bool = True
     max_per_order: Optional[int] = None
     image_url: Optional[str] = None
+    product_url: Optional[str] = None
     match_score: float = Field(default=1.0, ge=0.0, le=1.0)
 
     @property

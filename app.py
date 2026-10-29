@@ -1,7 +1,7 @@
 """
 Sabad (سبد) - Production-Grade Cross-Store Grocery Optimizer & Cart Dispatcher.
 Interactive Streamlit Application with Persian RTL layout and Live Network Execution.
-Redesigned with Digikala Jet (دیجی‌کالا جت) visual aesthetics and beginner-friendly shopping UX.
+Voice-first shopping with on-demand settings and basket comparison.
 """
 
 import sys
@@ -14,52 +14,43 @@ if str(ROOT_DIR) not in sys.path:
 import asyncio
 import os
 import inspect
-import importlib
+import hashlib
+from dataclasses import asdict
 import streamlit as st
 
 import sabad.config as config
-import sabad.normalizer.persian_digits as persian_digits_module
-import sabad.normalizer.gemini_parser as gemini_parser_module
-import sabad.normalizer.parser as parser_module
-import sabad.normalizer.matcher as matcher_module
-import sabad.normalizer as normalizer_pkg
-import sabad.ui_assets as ui_assets_module
-
-for _mod in (config, persian_digits_module, gemini_parser_module, parser_module, matcher_module, normalizer_pkg, ui_assets_module):
-    try:
-        importlib.reload(_mod)
-    except Exception:
-        pass
-
-DEFAULT_LATITUDE = getattr(config, "DEFAULT_LATITUDE", float(os.getenv("LATITUDE", "35.715298")))
-DEFAULT_LONGITUDE = getattr(config, "DEFAULT_LONGITUDE", float(os.getenv("LONGITUDE", "51.404343")))
 GEMINI_API_KEY = getattr(config, "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 GEMINI_MODEL = getattr(config, "GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")).strip()
 
-from sabad.adapters.snapp_market import SnappMarketAdapter
-from sabad.adapters.digikala_jet import DigikalaJetAdapter
-from sabad.adapters.okala import OkalaAdapter
-from sabad.adapters.tapsi_market import TapsiMarketAdapter
-from sabad.adapters.session_manager import SessionManager
 from sabad.normalizer.parser import parse_grocery_input
-from sabad.normalizer.matcher import match_sku, extract_volume_from_title
-from sabad.models.grocery import ParsedGroceryBasket, ParsedGroceryItem
-from sabad.models.optimization import OptimizationResult, StoreOrder, FlashDealOpportunity
+from sabad.normalizer.gemini_parser import transcribe_audio_gemini
+from sabad.normalizer.matcher import extract_volume_from_title
+from sabad.models.grocery import ParsedGroceryBasket
+from sabad.models.catalog import StoreItem
+from sabad.models.optimization import OptimizationResult
 from sabad.optimizer.deal_advisor import FlashDealAdvisor
 from sabad.optimizer.single_store import calculate_delivery_fee
 from sabad.harvester import CatalogHarvester
-from sabad.optimizer.milp_solver import MILPBasketOptimizer
+from sabad.app_services import compare_and_optimize_basket
 from sabad.dispatcher.dispatcher import CartDispatcher
+from sabad.product_links import build_product_link
 from sabad.ui_assets import (
-    POPULAR_SHELF_ITEMS,
     resolve_product_image_and_fallback,
-    render_jet_product_card_html,
-    render_selected_cart_card_html,
-    render_flash_deal_opportunity_card_html,
-    CURATED_FLASH_DEALS_BY_STORE,
-    get_default_flash_deals,
-    STORE_METADATA,
 )
+from sabad.pricing import comparable_price_text
+from sabad.price_history import PriceHistoryStore
+from sabad.feedback import FEEDBACK_REASONS, FeedbackStore
+from sabad.search_explanations import explain_missing_item
+from sabad.security import MAX_BASKET_ITEMS, SlidingWindowLimiter, log_store_failure, validate_audio_size, validate_basket_text
+
+
+def _uses_serverless_voice_recorder() -> bool:
+    """Vercel Functions cannot reliably serve Streamlit's multipart upload route."""
+    return bool(
+        os.getenv("VERCEL")
+        or os.getenv("VERCEL_ENV")
+        or os.getenv("AWS_LAMBDA_FUNCTION_VERSION")
+    )
 
 
 # -------------------------------------------------------------
@@ -67,841 +58,296 @@ from sabad.ui_assets import (
 # -------------------------------------------------------------
 st.set_page_config(
     page_title="سبد | سوپرمارکت آنلاین فوری و بهینه‌ساز قیمت‌ها",
-    page_icon="🛒",
+    page_icon=":material/shopping_basket:",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# -------------------------------------------------------------
-# Persian RTL Styling & Digikala Jet Visual Aesthetics
-# -------------------------------------------------------------
+# Keep the landing page focused on the native, accessible audio recorder.
+from sabad.ui_settings import (
+    LOCATIONS, initialize_preferences, invalidate_comparison, render_settings,
+)
+
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
-    
-    html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6, input, textarea, button, select {
-        font-family: 'Vazirmatn', sans-serif !important;
-        direction: rtl !important;
-        text-align: right !important;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap');
+:root { --ink:#102a43; --muted:#627d98; --line:#e5e9ed; --brand:#0b8f78; --brand-dark:#06705f; }
+html, body, input, textarea, button, select, .stMarkdown, .stText, p, h1, h2, h3, h4 { font-family:'Vazirmatn',sans-serif; }
+[data-testid="stAppViewContainer"] { background:#fff; direction:rtl; }
+[data-testid="stHeader"], [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], #MainMenu, footer { display:none; }
+[data-testid="stMainBlockContainer"] { max-width:1120px; padding:24px 28px 60px; }
+[data-testid="stDialog"] { direction:rtl; }
+input, textarea, .stMarkdown, .stText, label { direction:rtl; text-align:right; }
+button:focus-visible { outline:3px solid #72cbb8; outline-offset:5px; }
+.st-key-app_toolbar button { color:#697782; background:transparent; border:1px solid #e9edef; border-radius:50px; padding:8px 16px; }
+.st-key-voice_landing { margin-top:clamp(110px,24vh,260px); margin-bottom:36px; }
+.st-key-voice_review { margin:38px 0 28px; }
+.st-key-voice_landing [data-testid="stMarkdownContainer"] p,
+.st-key-voice_review [data-testid="stMarkdownContainer"] p { text-align:center; color:#6b747b; font-size:16px; line-height:1.9; }
+.st-key-voice_landing [data-testid="stAudioInput"],
+.st-key-voice_review [data-testid="stAudioInput"] { max-width:340px; margin:auto; }
+.st-key-voice_landing [data-testid="stAudioInput"] > div:last-child,
+.st-key-voice_review [data-testid="stAudioInput"] > div:last-child {
+  background:transparent; border:0; overflow:visible; height:auto; min-height:142px;
+  display:flex; flex-direction:column; padding:12px; gap:12px;
+}
+[data-testid="stAudioInput"] button[aria-label="Record"],
+[data-testid="stAudioInput"] button[aria-label="Stop recording"] {
+  width:112px; height:112px; min-width:112px; border-radius:50%; background:#0b8f78;
+  color:#fff; border:0; box-shadow:0 0 0 12px #f1f9f6,0 8px 24px #0b8f781c;
+  transition:background .2s,box-shadow .2s,transform .2s;
+}
+[data-testid="stAudioInput"] button[aria-label="Record"]:hover { background:#087563; transform:translateY(-2px); }
+[data-testid="stAudioInput"] button[aria-label="Stop recording"] { background:#d94747; box-shadow:0 0 0 12px #fdf1f1; }
+[data-testid="stAudioInput"] button[aria-label="Record"] svg,
+[data-testid="stAudioInput"] button[aria-label="Stop recording"] svg { width:38px; height:38px; }
+[data-testid="stAudioInput"]:has(button[aria-label="Record"]:not(:disabled)):not(:has(button[aria-label="Play"],button[aria-label="Pause"])) [data-testid="stAudioInputWaveformTimeCode"] { display:none; }
+/* The native idle waveform is decorative. Keep permission/error messages visible. */
+[data-testid="stAudioInput"]:has(button[aria-label="Record"]:not(:disabled)):not(:has(button[aria-label="Play"],button[aria-label="Pause"])) > div:last-child > div:has(> [data-testid="stAudioInputWaveSurfer"]) { display:none; }
+[data-testid="stAudioInputWaveSurfer"] { width:260px; }
+[data-testid="stAudioInputWaveformTimeCode"] { direction:ltr; }
+@media (max-width:640px) {
+  [data-testid="stMainBlockContainer"] { padding:18px 20px 40px; }
+  .st-key-voice_landing { margin-top:25vh; }
+  .st-key-voice_landing [data-testid="stMarkdownContainer"] p { font-size:14px; }
+}
+.shelf-product-item,.jet-cart-item-card,.jet-product-card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:13px; box-shadow:0 3px 12px rgba(16,42,67,.04); transition:.2s ease; }
+.shelf-product-item:hover,.jet-cart-item-card:hover,.jet-product-card:hover { border-color:#83d9c8; transform:translateY(-2px); box-shadow:0 10px 22px rgba(16,42,67,.08); }
+.shelf-img-box,.jet-cart-img-box,.jet-card-img-container { width:100%; height:112px; display:flex; align-items:center; justify-content:center; background:#f4f7fa; border-radius:12px; margin-bottom:10px; padding:8px; overflow:hidden; position:relative; }
+.shelf-img,.jet-cart-img,.jet-card-img { max-width:100%; max-height:100%; object-fit:contain; }
+.shelf-discount-tag,.jet-card-discount-badge { position:absolute; top:7px; right:7px; background:#e8590c; color:#fff; padding:3px 7px; border-radius:999px; font-size:.68rem; font-weight:800; direction:ltr; }
+.shelf-title,.jet-cart-title,.jet-card-product-title { font-size:.83rem; font-weight:700; color:var(--ink); line-height:1.45; min-height:2.4em; margin-bottom:5px; }
+.shelf-price,.jet-card-price-primary { font-size:.85rem; font-weight:800; color:var(--ink); }
+.jet-cart-grid,.jet-product-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:13px; margin:12px 0 18px; }
+.jet-cart-card-top,.jet-card-header-bar,.jet-card-meta-row,.jet-card-price-container,.jet-card-footer-summary { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.jet-cart-brand-tag,.jet-cart-vol-badge,.jet-card-qty-badge { background:#f0f4f7; color:var(--muted); padding:3px 8px; border-radius:7px; font-size:.69rem; font-weight:700; }
+.jet-cart-qty-tag { background:#d7f5ee; color:var(--brand-dark); padding:3px 8px; border-radius:999px; font-size:.7rem; font-weight:800; }
+.jet-card-req-title,.jet-currency-unit,.jet-card-old-price { color:var(--muted); font-size:.71rem; }
+.jet-card-stock-in,.jet-cart-ready-chip,.jet-card-saving-pill { color:#087f5b; font-size:.71rem; font-weight:800; }
+.jet-card-stock-out { color:#c92a2a; font-size:.71rem; font-weight:800; }
+.jet-card-price-container { margin:9px 0 7px; border-top:1px dashed var(--line); padding-top:8px; }
+.jet-card-line-total { color:var(--ink); font-size:.73rem; }
+.jet-checkout-summary-card { background:linear-gradient(135deg,#fff 0%,#edfdf8 100%); border:1px solid #9ee8d7; border-radius:20px; padding:20px 24px; margin:18px 0; box-shadow:0 10px 28px rgba(11,143,120,.08); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:18px; }
+.jet-summary-col { text-align:right; }.jet-summary-label { color:var(--muted); font-size:.75rem; margin-bottom:4px; }.jet-summary-val-highlight { color:var(--brand-dark); font-size:1.45rem; font-weight:800; }.jet-summary-val-saving { color:#087f5b; font-size:1.05rem; font-weight:800; }.jet-summary-val-fee,.jet-summary-val-badge { color:var(--ink); font-size:1.05rem; font-weight:800; }
+.badge-ok { background:#d7f5ee; color:#087f5b; padding:4px 9px; border-radius:999px; font-size:.76rem; font-weight:700; display:inline-block; }.badge-err { background:#ffe3e3; color:#c92a2a; padding:4px 9px; border-radius:999px; font-size:.76rem; font-weight:700; display:inline-block; }
 
-    [data-testid="stIcon"], [data-testid="stExpanderToggleIcon"], .material-symbols-rounded, .material-icons {
-        font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
-        direction: ltr !important;
-    }
-    
-    [data-testid="stSidebar"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-
-    /* Digikala Jet Top Header Bar */
-    .jet-navbar {
-        background: linear-gradient(135deg, #E6123D 0%, #D4002A 50%, #99001C 100%);
-        color: #ffffff;
-        border-radius: 18px;
-        padding: 24px 28px;
-        margin-bottom: 24px;
-        box-shadow: 0 10px 30px rgba(230, 18, 61, 0.22);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 16px;
-    }
-    .jet-brand-badge {
-        display: inline-block;
-        background: rgba(255, 255, 255, 0.2);
-        backdrop-filter: blur(8px);
-        border: 1px solid rgba(255, 255, 255, 0.35);
-        color: #ffffff;
-        padding: 4px 12px;
-        border-radius: 9999px;
-        font-size: 0.82rem;
-        font-weight: 700;
-        margin-bottom: 8px;
-    }
-    .jet-navbar-title {
-        font-size: 1.65rem;
-        font-weight: 900;
-        margin: 0 0 6px 0;
-        color: #ffffff !important;
-        letter-spacing: -0.5px;
-    }
-    .jet-navbar-sub {
-        font-size: 0.95rem;
-        color: rgba(255, 255, 255, 0.92);
-        line-height: 1.6;
-        margin: 0;
-    }
-    .jet-navbar-badges {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        align-items: flex-start;
-    }
-    .jet-navbar-chip {
-        background: #ffffff;
-        color: #E6123D;
-        padding: 6px 14px;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    /* Beginner Stepper Guide */
-    .jet-stepper {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
-        margin-bottom: 24px;
-    }
-    @media (max-width: 768px) {
-        .jet-stepper {
-            grid-template-columns: 1fr;
-        }
-    }
-    .jet-step-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 16px 18px;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
-        transition: all 0.2s ease-in-out;
-    }
-    .jet-step-card:hover {
-        transform: translateY(-2px);
-        border-color: #fca5a5;
-        box-shadow: 0 6px 16px rgba(230, 18, 61, 0.08);
-    }
-    .jet-step-header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 6px;
-        font-size: 1rem;
-        font-weight: 800;
-        color: #1e293b;
-    }
-    .jet-step-num {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 26px;
-        height: 26px;
-        background: #fee2e2;
-        color: #E6123D;
-        font-weight: 900;
-        border-radius: 50%;
-        font-size: 0.85rem;
-    }
-    .jet-step-card p {
-        font-size: 0.85rem;
-        color: #64748b;
-        margin: 0;
-        line-height: 1.5;
-    }
-
-    /* Quick Shelf Items */
-    .shelf-product-item {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 12px;
-        text-align: center;
-        margin-bottom: 8px;
-        transition: all 0.2s;
-    }
-    .shelf-product-item:hover {
-        border-color: #E6123D;
-        box-shadow: 0 4px 12px rgba(230, 18, 61, 0.08);
-    }
-    .shelf-img-box {
-        position: relative;
-        width: 100%;
-        height: 100px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #f8fafc;
-        border-radius: 10px;
-        margin-bottom: 8px;
-        padding: 6px;
-        overflow: hidden;
-    }
-    .shelf-img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
-    }
-    .shelf-discount-tag {
-        position: absolute;
-        top: 6px;
-        right: 6px;
-        background: #E6123D;
-        color: #ffffff;
-        padding: 2px 6px;
-        border-radius: 9999px;
-        font-size: 0.72rem;
-        font-weight: 800;
-        direction: ltr;
-    }
-    .shelf-title {
-        font-size: 0.85rem;
-        font-weight: 700;
-        color: #1e293b;
-        height: 2.5em;
-        line-height: 1.25;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        margin-bottom: 4px;
-    }
-    .shelf-price {
-        font-size: 0.82rem;
-        font-weight: 800;
-        color: #0f172a;
-    }
-
-    /* Selected Cart Cards (Digikala Jet Cart Aisle) */
-    .jet-cart-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-        gap: 14px;
-        margin: 14px 0 20px 0;
-    }
-    .jet-cart-item-card {
-        background: #ffffff;
-        border: 1.5px solid #fee2e2;
-        border-radius: 14px;
-        padding: 12px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        box-shadow: 0 2px 8px rgba(230, 18, 61, 0.05);
-        transition: all 0.2s ease-in-out;
-        position: relative;
-    }
-    .jet-cart-item-card:hover {
-        border-color: #E6123D;
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(230, 18, 61, 0.12);
-    }
-    .jet-cart-card-top {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 6px;
-    }
-    .jet-cart-brand-tag {
-        background: #f1f5f9;
-        color: #475569;
-        padding: 2px 8px;
-        border-radius: 6px;
-        font-size: 0.72rem;
-        font-weight: 700;
-    }
-    .jet-cart-qty-tag {
-        background: #fee2e2;
-        color: #E6123D;
-        padding: 2px 8px;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 800;
-    }
-    .jet-cart-img-box {
-        width: 100%;
-        height: 110px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #f8fafc;
-        border-radius: 10px;
-        margin-bottom: 8px;
-        padding: 6px;
-        overflow: hidden;
-    }
-    .jet-cart-img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
-    }
-    .jet-cart-title {
-        font-size: 0.85rem;
-        font-weight: 700;
-        color: #1e293b;
-        height: 2.5em;
-        line-height: 1.25;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        margin-bottom: 6px;
-    }
-    .jet-cart-subrow {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 0.72rem;
-    }
-    .jet-cart-vol-badge {
-        background: #f8fafc;
-        color: #64748b;
-        padding: 1px 6px;
-        border-radius: 4px;
-        border: 1px solid #e2e8f0;
-    }
-    .jet-cart-ready-chip {
-        color: #059669;
-        font-weight: 700;
-    }
-
-    /* Product Grid & Jet Product Cards */
-    .jet-product-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-        gap: 16px;
-        margin: 16px 0 24px 0;
-    }
-    .jet-product-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.04);
-        transition: all 0.25s ease-in-out;
-        position: relative;
-    }
-    .jet-product-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
-        border-color: #cbd5e1;
-    }
-    .jet-card-header-bar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 8px;
-    }
-    .jet-store-chip {
-        padding: 3px 8px;
-        border-radius: 8px;
-        font-size: 0.72rem;
-        font-weight: 700;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-    }
-    .jet-card-discount-badge {
-        background-color: #E6123D;
-        color: #ffffff;
-        padding: 2px 7px;
-        border-radius: 9999px;
-        font-size: 0.72rem;
-        font-weight: 800;
-        direction: ltr;
-    }
-    .jet-card-img-container {
-        width: 100%;
-        height: 140px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #f8fafc;
-        border-radius: 12px;
-        margin-bottom: 10px;
-        overflow: hidden;
-        padding: 8px;
-    }
-    .jet-card-img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
-    }
-    .jet-card-content {
-        flex-grow: 1;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-    .jet-card-req-title {
-        font-size: 0.72rem;
-        color: #94a3b8;
-        margin-bottom: 2px;
-    }
-    .jet-card-product-title {
-        font-size: 0.92rem;
-        font-weight: 700;
-        color: #1e293b;
-        line-height: 1.35;
-        height: 2.7em;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        margin-bottom: 8px;
-    }
-    .jet-card-meta-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 8px;
-    }
-    .jet-card-stock-in {
-        font-size: 0.72rem;
-        color: #059669;
-        font-weight: 700;
-    }
-    .jet-card-stock-out {
-        font-size: 0.72rem;
-        color: #dc2626;
-        font-weight: 700;
-    }
-    .jet-card-qty-badge {
-        background: #f1f5f9;
-        color: #334155;
-        padding: 2px 8px;
-        border-radius: 6px;
-        font-size: 0.78rem;
-        font-weight: 800;
-    }
-    .jet-card-price-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 8px;
-        border-top: 1px dashed #e2e8f0;
-        padding-top: 8px;
-    }
-    .jet-card-price-primary {
-        color: #0f172a;
-        font-weight: 800;
-        font-size: 1.05rem;
-    }
-    .jet-price-digits {
-        font-weight: 900;
-    }
-    .jet-currency-unit {
-        font-size: 0.75rem;
-        font-weight: normal;
-        color: #64748b;
-        margin-right: 4px;
-    }
-    .jet-card-old-price {
-        font-size: 0.8rem;
-        color: #94a3b8;
-        text-decoration: line-through;
-    }
-    .jet-card-footer-summary {
-        background: #f8fafc;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 0.78rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-    .jet-card-line-total {
-        color: #334155;
-    }
-    .jet-card-saving-pill {
-        color: #059669;
-        font-weight: 800;
-        font-size: 0.75rem;
-    }
-
-    /* Golden Checkout Summary Card */
-    .jet-checkout-summary-card {
-        background: linear-gradient(135deg, #ffffff 0%, #fff7ed 100%);
-        border: 2px solid #fdba74;
-        border-radius: 18px;
-        padding: 20px 24px;
-        margin: 20px 0;
-        box-shadow: 0 8px 25px rgba(249, 115, 22, 0.08);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 16px;
-    }
-    .jet-summary-col {
-        text-align: right;
-    }
-    .jet-summary-label {
-        font-size: 0.85rem;
-        color: #64748b;
-        margin-bottom: 4px;
-    }
-    .jet-summary-val-highlight {
-        font-size: 1.45rem;
-        font-weight: 900;
-        color: #E6123D;
-    }
-    .jet-summary-val-saving {
-        font-size: 1.15rem;
-        font-weight: 800;
-        color: #059669;
-    }
-    .jet-summary-val-fee {
-        font-size: 1.15rem;
-        font-weight: 800;
-        color: #334155;
-    }
-    .jet-summary-val-badge {
-        font-size: 1.15rem;
-        font-weight: 800;
-        color: #2563EB;
-    }
-
-    /* Standard Badges & Cards (Retained for Test Anchors) */
-    .badge-ok {
-        background-color: #d1fae5;
-        color: #065f46;
-        padding: 4px 10px;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        display: inline-block;
-    }
-    
-    .badge-err {
-        background-color: #fee2e2;
-        color: #991b1b;
-        padding: 4px 10px;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        display: inline-block;
-    }
-    
-    .metric-card {
-        background-color: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        padding: 16px;
-        text-align: center !important;
-    }
-    
-    .trap-banner {
-        background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-        border: 1px solid #f87171;
-        border-radius: 12px;
-        padding: 18px;
-        margin: 14px 0;
-    }
-    
-    .deal-banner {
-        background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-        border: 1px solid #4ade80;
-        border-radius: 12px;
-        padding: 18px;
-        margin: 14px 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# -------------------------------------------------------------
-# Sidebar: Connection Status & Delivery Coordinates
-# -------------------------------------------------------------
-st.sidebar.title("⚙️ وضعیت پلتفرم‌ها و موقعیت")
+def _oidc_is_configured() -> bool:
+    try:
+        return bool(st.secrets.get("auth", {}).get("client_id"))
+    except Exception:
+        return False
 
-# Delivery location presets in Tehran
-locations = {
-    "تهران - بلوار کشاورز / یوسف‌آباد": (35.715298, 51.404343),
-    "تهران - سعادت‌آباد / شهرک غرب": (35.780833, 51.371389),
-    "تهران - تجریش / شمیرانات": (35.804167, 51.428889),
-    "تهران - تهرانپارس": (35.733333, 51.533333),
-}
 
-loc_choice = st.sidebar.selectbox("محدوده تحویل سفارش:", list(locations.keys()), index=0)
-lat, lng = locations[loc_choice]
+AUTH_ENABLED = _oidc_is_configured() or os.getenv("SABAD_REQUIRE_AUTH", "").lower() in {"1", "true", "yes"}
+COMPARE_LIMITER = SlidingWindowLimiter()
+initialize_preferences()
 
-st.sidebar.markdown(f"**مختصات فعال:** `{lat:.4f}, {lng:.4f}`")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔌 وضعیت اتصال فروشگاه‌ها")
+@st.cache_resource
+def get_price_history_store() -> PriceHistoryStore:
+    return PriceHistoryStore()
 
-# Platform health and session indicators
-col_s1, col_s2 = st.sidebar.columns([3, 2])
-with col_s1:
-    st.write("اسنپ‌مارکت:")
-with col_s2:
-    if SessionManager.is_authenticated("snapp_market"):
-        st.markdown('<span class="badge-ok">🟢 متصل</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
 
-col_j1, col_j2 = st.sidebar.columns([3, 2])
-with col_j1:
-    st.write("دیجی‌کالا جت:")
-with col_j2:
-    if SessionManager.is_authenticated("digikala_jet"):
-        st.markdown('<span class="badge-ok">🟢 متصل</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
+@st.cache_resource
+def get_feedback_store() -> FeedbackStore:
+    return FeedbackStore()
 
-col_o1, col_o2 = st.sidebar.columns([3, 2])
-with col_o1:
-    st.write("افق کوروش / اکالا:")
-with col_o2:
-    if SessionManager.is_authenticated("okala"):
-        st.markdown('<span class="badge-ok">🟢 متصل</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
 
-col_t1, col_t2 = st.sidebar.columns([3, 2])
-with col_t1:
-    st.write("تپسی مارکت:")
-with col_t2:
-    if SessionManager.is_authenticated("tapsi_market"):
-        st.markdown('<span class="badge-ok">🟢 متصل</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge-err">🔴 بدون نشست</span>', unsafe_allow_html=True)
-
-is_otp_active = any(st.session_state.get(f"otp_sent_{k}") for k in ["snapp_market", "digikala_jet", "okala", "tapsi_market"])
-with st.sidebar.expander("🔑 ورود به حساب فروشگاه‌ها (OTP)", expanded=is_otp_active):
-    store_map = {
-        "اسنپ‌مارکت": ("snapp_market", SnappMarketAdapter()),
-        "دیجی‌کالا جت": ("digikala_jet", DigikalaJetAdapter()),
-        "افق کوروش / اکالا": ("okala", OkalaAdapter()),
-        "تپسی مارکت": ("tapsi_market", TapsiMarketAdapter()),
-    }
-    sel_store_label = st.selectbox("انتخاب فروشگاه:", list(store_map.keys()))
-    sel_platform, sel_adapter = store_map[sel_store_label]
-
-    is_logged_in = SessionManager.is_authenticated(sel_platform)
-    if is_logged_in:
-        user_phone = SessionManager.get_phone(sel_platform) or "احراز هویت شده"
-        st.success(f"حساب فعال: {user_phone}")
-        if st.button("خروج از حساب", key=f"logout_{sel_platform}"):
-            SessionManager.clear_session(sel_platform)
-            st.session_state[f"otp_sent_{sel_platform}"] = False
-            st.rerun()
-    else:
-        phone_val = st.text_input(
-            "شماره موبایل (۰۹XXXXXXXXX):",
-            placeholder="0912...",
-            key=f"phone_input_{sel_platform}"
+@st.fragment
+def render_feedback_control(item: StoreItem, requested_text: str, view_key: str) -> None:
+    """Ask why a shown product is wrong without rerunning the whole comparison."""
+    token = hashlib.sha256(f"{view_key}:{item.platform}:{item.product_id}:{requested_text}".encode()).hexdigest()[:16]
+    with st.popover("این کالا مناسب نیست"):
+        reason = st.pills(
+            "چرا مناسب نیست؟",
+            FEEDBACK_REASONS,
+            key=f"feedback_reason_{token}",
         )
-        if st.button("📩 ارسال کد تایید پیامکی", key=f"send_otp_btn_{sel_platform}"):
-            if len(phone_val.strip()) >= 10:
-                with st.spinner("در حال ارسال پیامک..."):
-                    send_res = asyncio.run(sel_adapter.send_otp(phone_val))
-                if send_res.get("success"):
-                    st.session_state[f"otp_sent_{sel_platform}"] = True
-                    st.session_state[f"saved_phone_{sel_platform}"] = phone_val.strip()
-                    if "challenge_token" in send_res:
-                        st.session_state[f"challenge_{sel_platform}"] = send_res["challenge_token"]
-                    st.success(send_res.get("message", "کد تأیید ارسال شد."))
-                    st.rerun()
-                else:
-                    st.error(send_res.get("message", "خطا در ارسال کد."))
+        if st.button("ثبت دلیل", key=f"feedback_submit_{token}"):
+            if not reason:
+                st.warning("یک دلیل را انتخاب کن.")
             else:
-                st.warning("لطفاً شماره موبایل معتبر وارد کنید.")
-
-        if st.session_state.get(f"otp_sent_{sel_platform}"):
-            st.markdown("---")
-            target_phone = st.session_state.get(f"saved_phone_{sel_platform}") or phone_val
-            st.caption(f"کد ارسال‌شده به {target_phone} را وارد کنید:")
-
-            with st.form(key=f"verify_otp_form_{sel_platform}"):
-                otp_val = st.text_input(
-                    "کد پیامک‌شده را وارد کنید:",
-                    max_chars=6,
-                    key=f"otp_input_{sel_platform}"
+                get_feedback_store().submit(
+                    requested_text=requested_text,
+                    selected_title=item.title,
+                    platform=item.platform,
+                    reason=reason,
+                    session_key=_session_identity(),
                 )
-                submit_otp = st.form_submit_button("✅ تأیید و ذخیره نشست", type="primary")
+                st.success("ثبت شد.")
 
-            if submit_otp:
-                clean_otp = otp_val.strip()
-                if len(clean_otp) >= 4:
-                    with st.spinner("در حال تأیید کد و دریافت توکن..."):
-                        ch_token = st.session_state.get(f"challenge_{sel_platform}")
-                        verify_res = asyncio.run(sel_adapter.verify_otp(target_phone, clean_otp, ch_token))
-                    if verify_res.get("success"):
-                        st.session_state[f"otp_sent_{sel_platform}"] = False
-                        st.success("✅ ورود با موفقیت انجام شد و نشست ذخیره گردید!")
-                        st.rerun()
+
+def _session_identity() -> str:
+    user = getattr(st, "user", None)
+    email = getattr(user, "email", None) if user else None
+    return str(email or st.session_state.get("session_identity") or id(st.session_state))
+
+
+def close_settings():
+    st.session_state["settings_open"] = False
+
+
+@st.dialog("تنظیمات", on_dismiss=close_settings)
+def settings_dialog():
+    render_settings(auth_enabled=AUTH_ENABLED, oidc_configured=_oidc_is_configured())
+
+
+def render_product_grid(cards: list[dict], view: str) -> None:
+    """Render safe native Streamlit product cards with clickable retailer links."""
+    if not cards:
+        st.info("کالایی برای نمایش وجود ندارد.")
+        return
+
+    columns = st.columns(min(4, len(cards)), gap="small")
+    for index, card in enumerate(cards):
+        item: StoreItem = card["item"]
+        requested_title = card.get("requested_title", item.title)
+        store_title = card.get("store_title", item.platform)
+        with columns[index % len(columns)]:
+            with st.container(border=True):
+                st.caption(store_title)
+                image_url, _ = resolve_product_image_and_fallback(item.title, item.image_url)
+                st.image(image_url, width="stretch")
+                st.caption(f"درخواستی: {requested_title}")
+                product_link = build_product_link(
+                    item.platform,
+                    item.title,
+                    product_id=item.product_id,
+                    store_id=item.store_id,
+                    explicit_url=item.product_url,
+                )
+                # API titles can contain Markdown markers (for example
+                # ``**ماکارونی**``). Escape them so the anchor remains a real
+                # clickable link instead of becoming malformed Markdown.
+                safe_title = (
+                    str(item.title)
+                    .replace("\\", "\\\\")
+                    .replace("*", "\\*")
+                    .replace("_", "\\_")
+                    .replace("[", "\\[")
+                    .replace("]", "\\]")
+                )
+                st.markdown(f"[**{safe_title}**]({product_link})")
+                price_text = f"{item.discount_price:,.0f} تومان"
+                if item.base_price > item.discount_price:
+                    price_text += f" · {item.discount_percent:.0f}٪ تخفیف"
+                st.markdown(f"**{price_text}** · {card.get('quantity', 1)} عدد")
+                unit_text = comparable_price_text(item)
+                if unit_text:
+                    st.caption(unit_text)
+                options = card.get("unit_options") or []
+                cheapest = next((row for row in options if row.get("is_cheapest")), None)
+                if cheapest and len(options) > 1:
+                    if str(cheapest.get("product_id")) == str(item.product_id):
+                        st.caption("ارزان‌ترین گزینهٔ بررسی‌شده بر اساس حجم")
                     else:
-                        st.error(verify_res.get("message", "کد تأیید نامعتبر یا منقضی شده است. لطفاً مجدداً کد ارسال کنید."))
-                else:
-                    st.warning("کد تأیید باید حداقل ۴ رقم باشد.")
+                        st.caption(f"ارزان‌ترین بر اساس حجم: {cheapest['title']} · {cheapest['text']}")
+                change = st.session_state.get("price_changes", {}).get(PriceHistoryStore.item_key(item))
+                if change and change.get("label"):
+                    st.caption(change["label"])
+                st.link_button("مشاهدهٔ محصول ↗", product_link, type="secondary")
+                render_feedback_control(item, requested_title, f"{view}:{index}")
 
-            if st.button("🔄 تغییر شماره / ارسال مجدد", key=f"reset_otp_btn_{sel_platform}"):
-                st.session_state[f"otp_sent_{sel_platform}"] = False
-                st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("✨ موتور هوش مصنوعی Gemini")
-if GEMINI_API_KEY:
-    st.sidebar.markdown(f'<span class="badge-ok">🟢 فعال: {GEMINI_MODEL}</span>', unsafe_allow_html=True)
-    use_ai = st.sidebar.checkbox("استفاده از هوش مصنوعی برای درک متن", value=True)
-else:
-    st.sidebar.markdown('<span class="badge-err">🔴 غیرفعال (بدون کلید)</span>', unsafe_allow_html=True)
-    use_ai = False
+with st.container(key="app_toolbar", horizontal=True, horizontal_alignment="right"):
+    if st.button("تنظیمات", icon=":material/settings:", key="open_settings"):
+        st.session_state["settings_open"] = True
+if st.session_state.get("settings_open"):
+    settings_dialog()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🧠 تنظیمات بهینه‌ساز")
-allow_split = st.sidebar.checkbox("امکان تقسیم سفارش بین چند فروشگاه (Multi-Store)", value=True)
-split_penalty = st.sidebar.slider(
-    "جریمه هماهنگی ارسال مضاعف (تومان):",
-    min_value=0,
-    max_value=60000,
-    value=25000,
-    step=5000,
-    help="حداقل میزان سودی که برای توجیه دریافت دو پیک مجزا لازم است."
-)
+lat, lng = LOCATIONS.get(st.session_state["delivery_location"], next(iter(LOCATIONS.values())))
+use_ai = st.session_state["use_ai"] and bool(GEMINI_API_KEY)
+allow_split = st.session_state["allow_split"]
+split_penalty = st.session_state["split_penalty"]
 
-# -------------------------------------------------------------
-# Main Application Header (Digikala Jet Visual Style)
-# -------------------------------------------------------------
-st.markdown(f"""
-<div class="jet-navbar">
-  <div>
-    <div class="jet-brand-badge">🚀 دیجی‌کالا جت × سبد</div>
-    <h1 class="jet-navbar-title">سوپرمارکت آنلاین فوری با تضمین کمترین قیمت</h1>
-    <p class="jet-navbar-sub">
-      استعلام لحظه‌ای و مقایسه هوشمند قیمت اقلام بین <b>دیجی‌کالا جت</b>، <b>اسنپ‌مارکت</b>، <b>افق کوروش (اکالا)</b> و <b>تپسی مارکت</b>
-    </p>
-  </div>
-  <div class="jet-navbar-badges">
-    <div class="jet-navbar-chip">⚡ تحویل فوری ۳۰ تا ۴۵ دقیقه</div>
-    <div class="jet-navbar-chip">📍 تحویل به: {loc_choice}</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+has_basket = bool(st.session_state["user_basket_text"].strip()) or st.session_state["show_editor"] or "opt_result" in st.session_state
+with st.container(key="voice_review" if has_basket else "voice_landing", horizontal_alignment="center"):
+    voice_key = f"basket_voice_note_{st.session_state['voice_generation']}"
+    voice_note = None
+    voice_payload = None
+    if _uses_serverless_voice_recorder():
+        # Avoid Streamlit's internal multipart upload endpoint on Vercel. The
+        # browser component sends the short recording through the session
+        # state channel instead, which works with a Python Function.
+        from sabad.voice_recorder import decode_recording, voice_recorder
 
-# 3-Step Beginner Visual Onboarding Stepper
-st.markdown("""
-<div class="jet-stepper">
-  <div class="jet-step-card">
-    <div class="jet-step-header">
-      <span class="jet-step-num">۱</span>
-      <span>انتخاب ساده اقلام</span>
-    </div>
-    <p>کالاهای دلخواهت رو از قفسه سریع کلیک کن یا به زبان عامیانه بنویس (مثلاً: دو تا شیر، یه پنیر، مایع پریل).</p>
-  </div>
-  <div class="jet-step-card">
-    <div class="jet-step-header">
-      <span class="jet-step-num">۲</span>
-      <span>استعلام خودکار قیمت‌ها</span>
-    </div>
-    <p>ما قیمت، موجودی انبار و تخفیف‌ها رو همزمان از دیجی‌کالا جت، اسنپ‌مارکت و اکالا دریافت و مقایسه می‌کنیم.</p>
-  </div>
-  <div class="jet-step-card">
-    <div class="jet-step-header">
-      <span class="jet-step-num">۳</span>
-      <span>سبد برنده و تحویل فوری</span>
-    </div>
-    <p>ارزان‌ترین سبد با تصاویر واقعی کالاها نمایش داده می‌شه و تله‌های تخفیف کاذب حذف می‌شن.</p>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-# -------------------------------------------------------------
-# Section 1: Persian Natural Language Basket Input & Visual Shelf
-# -------------------------------------------------------------
-st.subheader("📝 متن سبد خرید شما به زبان فارسی")
-
-sample_baskets = {
-    "سبد روزمره": "دو تا شیر پرچرب کاله یک لیتری، یه پنیر ویلی ۳۵۰ گرمی، یه مایع ظرفشویی پریل ۴ لیتری",
-    "سبد صبحانه": "یه بسته تخم مرغ، دو تا شیر کم چرب روزانه ۱ لیتری، یه کره ۱۰۰ گرمی",
-    "سبد شوینده و بهداشتی": "یه مایع ظرفشویی پریل، یه مایع دستشویی اکتیو، یه دستمال توالت پاپیا",
-}
-
-selected_sample = st.pills("نمونه‌های آماده:", list(sample_baskets.keys()))
-default_text = sample_baskets.get(selected_sample, "دو تا شیر پرچرب کاله یک لیتری، یه پنیر ویلی ۳۵۰ گرمی، یه مایع ظرفشویی پریل ۴ لیتری")
-
-# Shelf of Popular Essentials for Novice Shoppers (1-Click Add)
-with st.expander("🛍️ قفسه کالاهای پرمصرف سوپرمارکتی (افزودن سریع به سبد با تصاویر)", expanded=True):
-    st.caption("روی هر کالا کلیک کنید تا با تصویر به سبد شما اضافه شود:")
-    
-    shelf_categories = ["همه اقلام", "لبنیات و صبحانه", "خواربار و پخت‌وپز", "شوینده و بهداشتی", "نوشیدنی و تنقلات"]
-    selected_shelf_cat = st.pills("دسته‌بندی سوپرمارکت جت:", shelf_categories, default="همه اقلام")
-
-    if selected_shelf_cat and selected_shelf_cat != "همه اقلام":
-        filtered_shelf_items = [it for it in POPULAR_SHELF_ITEMS if it.get("category") == selected_shelf_cat]
+        voice_payload = voice_recorder(key=voice_key)
     else:
-        filtered_shelf_items = POPULAR_SHELF_ITEMS
+        voice_note = st.audio_input(
+            "ضبط لیست خرید", key=voice_key,
+            label_visibility="collapsed", width=340,
+        )
+    st.markdown("خریدت رو بگو؛ ارزون‌ترین سبد رو با هزینهٔ ارسال پیدا می‌کنیم.")
 
-    shelf_cols = st.columns(4)
-    for idx, s_item in enumerate(filtered_shelf_items):
-        with shelf_cols[idx % 4]:
-            img_src, fallback_uri = resolve_product_image_and_fallback(s_item["title"], s_item.get("image_url"))
-            st.markdown(f"""
-            <div class="shelf-product-item">
-              <div class="shelf-img-box">
-                <img src="{img_src}" alt="{s_item['title']}" class="shelf-img" loading="lazy" onerror="this.onerror=null; this.src='{fallback_uri}';" />
-                <span class="shelf-discount-tag">%{s_item['discount_percent']}</span>
-              </div>
-              <div class="shelf-title">{s_item['title']}</div>
-              <div class="shelf-price">{s_item['price_approx']:,} تومان</div>
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button(f"➕ افزودن {s_item['brand']}", key=f"shelf_add_{s_item['id']}"):
-                cur_text = st.session_state.get("user_basket_text", "").strip()
-                if not cur_text:
-                    new_text = s_item['raw_text']
-                else:
-                    new_text = f"{cur_text}، {s_item['raw_text']}"
-                st.session_state["user_basket_text"] = new_text
+# Consume each recording once and update the editor before it is instantiated.
+recording = None
+recording_mime_type = "audio/wav"
+if voice_payload:
+    recording = decode_recording(voice_payload)
+    if recording:
+        voice_bytes, recording_mime_type = recording
+elif voice_note is not None:
+    voice_bytes = voice_note.getvalue()
+    recording = (voice_bytes, getattr(voice_note, "type", None) or "audio/wav")
+
+if recording is not None:
+    voice_hash = hashlib.sha256(voice_bytes).hexdigest()
+    if st.session_state.get("last_voice_hash") != voice_hash:
+        st.session_state["last_voice_hash"] = voice_hash
+        st.session_state.pop("voice_error", None)
+        audio_validation = validate_audio_size(len(voice_bytes))
+        if not audio_validation.ok:
+            st.session_state["voice_error"] = audio_validation.message
+        elif not GEMINI_API_KEY:
+            st.session_state["voice_error"] = "تبدیل صدا به متن هنوز فعال نشده؛ از تنظیمات می‌تونی لیستت رو بنویسی."
+        else:
+            with st.spinner("داریم لیست خریدت رو می‌نویسیم…"):
+                transcript = transcribe_audio_gemini(voice_bytes, recording_mime_type)
+            if transcript:
+                st.session_state["user_basket_text"] = transcript
+                st.session_state["basket_editor"] = transcript
+                st.session_state["show_editor"] = True
+                invalidate_comparison()
                 st.rerun()
+            else:
+                st.session_state["voice_error"] = "صدا واضح نبود. دوباره ضبط کن یا از تنظیمات لیستت رو بنویس."
+if st.session_state.get("voice_error"):
+    st.warning(st.session_state["voice_error"])
 
-# Shelf of Daily High-Discount Flash Deals (40% - 70% Discounts)
-with st.expander("⚡ حراج‌های شگفت‌انگیز روزانه فروشگاه‌ها (۴۰٪ تا ۷۰٪ تخفیف)", expanded=False):
-    st.caption("پیشنهادهای شگفت‌انگیز روزانه فروشگاه‌ها با بالاترین تخفیف (مشابه دیجی‌کالا جت و اسنپ‌مارکت) - روی هر کالا کلیک کنید تا به سبد شما اضافه شود:")
-    all_flash = get_default_flash_deals()
-    flash_cols = st.columns(4)
-    deal_counter = 0
-    for plat_name, items in all_flash.items():
-        for d_item in items[:2]:
-            with flash_cols[deal_counter % 4]:
-                img_src, fallback_uri = resolve_product_image_and_fallback(d_item.title, d_item.image_url)
-                st.markdown(f"""
-                <div class="shelf-product-item" style="border: 2px solid #fecaca; background: #fff5f5;">
-                  <div class="shelf-img-box">
-                    <img src="{img_src}" alt="{d_item.title}" class="shelf-img" loading="lazy" onerror="this.onerror=null; this.src='{fallback_uri}';" />
-                    <span class="shelf-discount-tag" style="background:#dc2626;">%{d_item.discount_percent:.0f}</span>
-                  </div>
-                  <div class="shelf-title" style="font-weight:700;">{d_item.title}</div>
-                  <div class="shelf-price" style="color:#dc2626;">{d_item.discount_price:,.0f} تومان <span style="text-decoration:line-through; color:#94a3b8; font-size:0.75rem;">{d_item.base_price:,.0f}</span></div>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button(f"➕ افزودن ({d_item.discount_percent:.0f}٪)", key=f"shelf_flash_add_{d_item.product_id}"):
-                    cur_text = st.session_state.get("user_basket_text", default_text).strip()
-                    if not cur_text:
-                        new_text = f"یک {d_item.title}"
-                    else:
-                        new_text = f"{cur_text}، یک {d_item.title}"
-                    st.session_state["user_basket_text"] = new_text
-                    st.rerun()
-                deal_counter += 1
 
-# Sync user basket text with selected sample if sample changed or state uninitialized
-if "user_basket_text" not in st.session_state:
-    st.session_state["user_basket_text"] = default_text
+def update_basket():
+    st.session_state["user_basket_text"] = st.session_state["basket_editor"]
+    invalidate_comparison()
 
-    st.session_state["_last_selected_sample"] = selected_sample
-elif selected_sample != st.session_state.get("_last_selected_sample"):
-    st.session_state["_last_selected_sample"] = selected_sample
-    if selected_sample:
-        st.session_state["user_basket_text"] = sample_baskets.get(selected_sample, default_text)
 
-user_input = st.text_area(
-    "اقلام مورد نظرتان را به صورت طبیعی بنویسید (با ویرگول یا «و» جدا کنید):",
-    value=st.session_state.get("user_basket_text", default_text),
-    height=85
-)
-st.session_state["user_basket_text"] = user_input
+def replace_basket(text):
+    st.session_state["user_basket_text"] = text
+    st.session_state["basket_editor"] = text
+    invalidate_comparison()
+
+
+def clear_basket():
+    replace_basket("")
+    st.session_state["show_editor"] = False
+    st.session_state["voice_generation"] += 1
+    st.session_state.pop("last_voice_hash", None)
+    st.session_state.pop("voice_error", None)
+
+
+user_input = st.session_state["user_basket_text"]
+if user_input.strip() or st.session_state["show_editor"]:
+    if st.session_state.pop("_sync_basket_editor", False):
+        st.session_state["basket_editor"] = user_input
+    st.session_state.setdefault("basket_editor", user_input)
+    st.text_area(
+        "لیست خریدت", key="basket_editor", height=100,
+        placeholder="مثلاً دو تا شیر و یک پنیر…", on_change=update_basket,
+    )
+    user_input = st.session_state["user_basket_text"]
 
 def safe_parse_grocery_input(raw_text: str, use_ai: bool = True) -> ParsedGroceryBasket:
     """
@@ -925,99 +371,89 @@ def safe_parse_grocery_input(raw_text: str, use_ai: bool = True) -> ParsedGrocer
             return parse_grocery_input(raw_text)
         raise
 
-parsed_basket = safe_parse_grocery_input(user_input, use_ai=use_ai)
+
+def get_catalog_harvester() -> CatalogHarvester:
+    # Adapters hold branch and account state; keep them within this user's session.
+    if "catalog_harvester" not in st.session_state:
+        st.session_state["catalog_harvester"] = CatalogHarvester()
+    return st.session_state["catalog_harvester"]
+
+
+parse_key = (user_input, use_ai, GEMINI_MODEL)
+if st.session_state.get("parsed_basket_key") != parse_key:
+    st.session_state["parsed_basket"] = (
+        safe_parse_grocery_input(user_input, use_ai=use_ai)
+        if user_input.strip() else ParsedGroceryBasket(raw_input=user_input, items=[])
+    )
+    st.session_state["parsed_basket_key"] = parse_key
+parsed_basket = st.session_state["parsed_basket"]
 
 if parsed_basket.items:
-    used_gemini = getattr(parsed_basket, "engine", "") == "gemini" or (use_ai and bool(GEMINI_API_KEY))
-    engine_badge = (
-        f'<span class="badge-ok" style="font-size:0.75rem;">✨ تحلیل هوشمند با {GEMINI_MODEL}</span>'
-        if used_gemini
-        else '<span style="font-size:0.75rem; color:#64748b;">(موتور هوشمند محلی)</span>'
-    )
-
-    # Visual Selected Basket Showcase with Real Product Images & Remove Buttons
-    st.markdown(f"#### 🛍️ ویترین تصویری کالاهای انتخابی شما در سبد خرید ({len(parsed_basket.items)} قلم کالا) {engine_badge}", unsafe_allow_html=True)
-    st.caption("تصاویر واقعی، برند و تعداد اقلام انتخاب‌شده شما در سبد سوپرمارکتی دیجی‌کالا جت:")
-
-    cart_cols = st.columns(min(len(parsed_basket.items), 4))
     for i, item in enumerate(parsed_basket.items):
-        with cart_cols[i % len(cart_cols)]:
-            vol_spec = f"{item.volume_weight:g} {item.unit}" if item.volume_weight and item.unit else (item.unit or "")
-            card_html = render_selected_cart_card_html(
-                title=item.display_title,
-                brand=item.brand,
-                quantity=item.quantity,
-                volume_spec=vol_spec,
+        with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+            st.markdown(f"{i + 1}. {item.display_title}")
+            remaining = "، ".join(
+                it.raw_text.strip() if it.raw_text and it.raw_text.strip() else it.display_title
+                for idx, it in enumerate(parsed_basket.items) if idx != i
             )
-            st.markdown(card_html, unsafe_allow_html=True)
-            if st.button(f"🗑️ حذف {item.name}", key=f"del_cart_item_{i}"):
-                remaining_phrases = [
-                    (it.raw_text.strip() if it.raw_text and it.raw_text.strip() else it.display_title)
-                    for idx, it in enumerate(parsed_basket.items)
-                    if idx != i
-                ]
-                st.session_state["user_basket_text"] = "، ".join(remaining_phrases)
-                st.rerun()
-
-    c_act1, c_act2 = st.columns([1, 4])
-    with c_act1:
-        if st.button("🗑️ خالی کردن کل سبد", key="clear_all_basket_btn"):
-            st.session_state["user_basket_text"] = ""
-            st.rerun()
-
-    st.markdown(f"**اقلام تفکیک‌شده و ویژگی‌های استخراج‌شده:**", unsafe_allow_html=True)
-    cols = st.columns(min(len(parsed_basket.items), 4))
-    for i, item in enumerate(parsed_basket.items):
-        with cols[i % len(cols)]:
-            st.info(f"📌 **{item.display_title}**\n\n• نام: {item.name}\n• برند: {item.brand or 'هر برندی'}")
-else:
-    st.info("🛒 سبد خرید شما در حال حاضر خالی است. از قفسه کالاهای پرمصرف بالا کالاها را با یک کلیک اضافه کنید یا در کادر متنی بنویسید.")
-
+            st.button(
+                f"حذف {item.name}", key=f"del_cart_item_{i}", icon=":material/close:",
+                on_click=replace_basket, args=(remaining,),
+            )
+if user_input.strip() or st.session_state["show_editor"] or "opt_result" in st.session_state:
+    st.button("خالی کردن سبد", key="clear_all_basket_btn", on_click=clear_basket)
 
 # -------------------------------------------------------------
 # Section 2: Live Execution Pipeline
 # -------------------------------------------------------------
-if st.button("🚀 استعلام زنده و حل سبد بهینه", type="primary"):
+if (user_input.strip() or st.session_state["show_editor"]) and st.button("پیدا کردن ارزان‌ترین سبد", type="primary", icon=":material/search:", key="compare_basket"):
+    if AUTH_ENABLED and not getattr(st.user, "is_logged_in", False):
+        st.warning("برای مقایسه، از تنظیمات وارد حساب سبد شو.")
+        st.stop()
+    basket_check = validate_basket_text(user_input)
+    if not basket_check.ok:
+        st.warning(basket_check.message)
+        st.stop()
     if not parsed_basket.items:
         st.warning("لطفاً حداقل یک قلم کالا در سبد بنویسید.")
         st.stop()
+    if len(parsed_basket.items) > MAX_BASKET_ITEMS:
+        st.warning(f"حداکثر {MAX_BASKET_ITEMS} قلم در هر جست‌وجو بررسی می‌شود.")
+        st.stop()
+    allowed, retry_after = COMPARE_LIMITER.allow(_session_identity())
+    if not allowed:
+        st.warning(f"جست‌وجوهای این دقیقه تمام شد. {retry_after} ثانیهٔ دیگر دوباره امتحان کن.")
+        st.stop()
 
-    with st.status("🔍 در حال استعلام زنده قیمت‌ها و موجودی شعب سوپرمارکت...", expanded=True) as status:
-        harvester = CatalogHarvester()
-        adapters = harvester.adapters
-
-        st.write("📡 استعلام همزمان شعب و کاتالوگ اقلام از دیجی‌کالا جت، اسنپ‌مارکت و افق کوروش...")
-        store_infos, catalog_matches = asyncio.run(
-            harvester.harvest_catalog_matches(parsed_basket.items, lat, lng)
+    with st.status("در حال بررسی قیمت، تخفیف و ارسال…", expanded=False) as status:
+        harvester = get_catalog_harvester()
+        harvester, store_infos, catalog_matches, flash_deals, opt_result = asyncio.run(
+            compare_and_optimize_basket(
+                parsed_basket.items,
+                lat,
+                lng,
+                split_penalty_tomans=split_penalty,
+                allow_multi_store=allow_split,
+                harvester=harvester,
+            )
         )
-
-        st.write("⚡ رصد حراج‌های شگفت‌انگیز روزانه (۴۰٪ تا ۷۰٪ تخفیف)...")
-        try:
-            flash_deals = asyncio.run(harvester.harvest_flash_deals(lat, lng))
-        except Exception:
-            flash_deals = {}
         st.session_state["flash_deals_by_store"] = flash_deals
 
-        # Step 3: Optimization
-        st.write("🧮 حل مدل برنامه‌ریزی خطی عدد صحیح (MILP) و آدیت تله‌های شگفت‌انگیز...")
-        optimizer = MILPBasketOptimizer(split_penalty_tomans=split_penalty)
-        opt_result = optimizer.optimize(
-            basket_items=parsed_basket.items,
-            catalog_matches=catalog_matches,
-            store_infos=store_infos,
-            allow_multi_store=allow_split,
-            flash_deals_by_store=flash_deals,
-        )
-
-
-        status.update(label="✅ استعلام و بهینه‌سازی سبد خرید با موفقیت انجام شد!", state="complete", expanded=False)
+        status.update(label="بررسی فروشگاه‌ها انجام شد", state="complete", expanded=False)
 
     # Store result in session state for dispatch and itemized audit
+    try:
+        changes = get_price_history_store().record_matches(catalog_matches)
+        st.session_state["price_changes"] = {key: asdict(change) for key, change in changes.items()}
+    except Exception as exc:
+        log_store_failure("app", "price_history", exc)
+        st.session_state["price_changes"] = {}
     st.session_state["catalog_matches"] = catalog_matches
+    st.session_state["search_evidence"] = getattr(harvester, "last_search_evidence", {})
     st.session_state["store_infos"] = store_infos
     st.session_state["basket_items"] = parsed_basket.items
     st.session_state["opt_result"] = opt_result
-    st.session_state["adapters"] = adapters
+    st.session_state["adapters"] = harvester.adapters
 
 
 # -------------------------------------------------------------
@@ -1027,16 +463,16 @@ if "opt_result" in st.session_state:
     opt_result = st.session_state["opt_result"]
     adapters = st.session_state.get("adapters")
     if not adapters:
-        adapters = CatalogHarvester().adapters
+        adapters = get_catalog_harvester().adapters
         st.session_state["adapters"] = adapters
     catalog_matches = st.session_state.get("catalog_matches", {})
+    search_evidence = st.session_state.get("search_evidence", {})
     store_infos = st.session_state.get("store_infos", {})
     basket_items = st.session_state.get("basket_items", [])
     if not basket_items and "parsed_basket" in locals() and getattr(parsed_basket, "items", None):
         basket_items = parsed_basket.items
 
-    st.markdown("---")
-    st.subheader("📊 نتایج بهینه‌سازی و مقایسه جامع فروشگاه‌ها")
+    st.subheader("نتیجهٔ مقایسه")
 
     # Digikala Jet Inspired Golden Summary Card for Beginner Shoppers
     delivery_fee_label = (
@@ -1065,65 +501,61 @@ if "opt_result" in st.session_state:
     </div>
     """, unsafe_allow_html=True)
 
-    # Metrics summary cards (Required for test assertions)
-    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    with m_col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("هزینه کل سبد بهینه", f"{opt_result.grand_total_cost:,.0f} تومان")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with m_col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("تخفیف‌های ذخیره‌شده", f"{opt_result.total_discounts_saved:,.0f} تومان")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with m_col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("هزینه کل ارسال", f"{opt_result.total_delivery_fees:,.0f} تومان")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with m_col4:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("سود حاصل از بهینه‌سازی", f"{opt_result.net_savings_versus_worst:,.0f} تومان")
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.success(
+        "این سبد از بین فروشگاه‌های بررسی‌شده کم‌هزینه‌ترین گزینه است؛ "
+        "قیمت کالا، تخفیف و هزینهٔ ارسال همگی در محاسبه لحاظ شده‌اند."
+    )
 
-    # -------------------------------------------------------------
-    # Flash Deal Trap Auditor Card
-    # -------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("🕵️ گزارش آدیتور تله‌های شگفت‌انگیز (Marketing Trap Auditor)")
-    
-    if opt_result.trap_audit.has_traps:
-        st.markdown(f"""
-        <div class="trap-banner">
-            <h4 style="color:#991b1b; margin-top:0;">🚨 هشدار تله‌ی تخفیف شناسایی شد!</h4>
-            <p>{opt_result.trap_audit.summary_fa}</p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="deal-banner">
-            <h4 style="color:#166534; margin-top:0;">✅ تخفیف‌های سبد اقتصادی و واقعی هستند</h4>
-            <p>{opt_result.trap_audit.summary_fa}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    for audit in opt_result.trap_audit.audited_deals:
-        with st.expander(f"بررسی کالای تخفیف‌دار: {audit.product_title}"):
-            st.write(audit.explanation_fa)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("تخفیف ظاهری کالا (+)", f"{audit.apparent_deal_saving:,.0f} ت")
-            c2.metric("گرانی سایر اقلام سبد (-)", f"{audit.collateral_item_markup:,.0f} ت")
-            c3.metric("هزینه ارسال اضافه (-)", f"{audit.extra_shipping_fee:,.0f} ت")
-            c4.metric("سود یا زیان خالص (=)", f"{audit.net_advantage:,.0f} ت")
-
-    # -------------------------------------------------------------
-    # Store Comparison Table (Must be at.dataframe[0] for tests)
-    # -------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("🏪 مقایسه خرید تک‌فروشگاهی در برابر سبد هوشمند")
-
+    # Store comparison: compact cards are the primary view. The numerical
+    # dataframe stays available inside a collapsed details panel.
     comparison_data = []
     for s_name, order in opt_result.single_store_orders.items():
         adapter = adapters.get(s_name) if adapters else None
         title = adapter.platform_title_fa if adapter else s_name
+        store_missing = []
+        for requested_item in basket_items:
+            found = catalog_matches.get(requested_item.raw_text, {}).get(s_name)
+            if not found or not found.is_in_stock:
+                store_missing.append(requested_item.display_title)
+
+        with st.container(border=True):
+            head_col, status_col = st.columns([3, 1], vertical_alignment="center")
+            with head_col:
+                st.markdown(f"### {title}")
+            with status_col:
+                if order and not store_missing:
+                    st.badge("کامل", icon=":material/check_circle:", color="green")
+                elif order:
+                    st.badge(f"{len(store_missing)} قلم کسری", icon=":material/warning:", color="orange")
+                else:
+                    st.badge("تأمین نشد", icon=":material/error:", color="red")
+            if order:
+                cost_col, fee_col, discount_col = st.columns(3)
+                cost_col.metric("پرداختی", f"{order.total_cost:,.0f} ت")
+                fee_col.metric("ارسال", f"{order.delivery_fee:,.0f} ت")
+                discount_col.metric("تخفیف", f"{order.total_savings:,.0f} ت")
+            if store_missing:
+                for requested_item in basket_items:
+                    if requested_item.display_title not in store_missing:
+                        continue
+                    evidence = search_evidence.get(requested_item.raw_text, {}).get(s_name, {})
+                    st.markdown(
+                        explain_missing_item(
+                            evidence,
+                            requested_title=requested_item.display_title,
+                            product_name=requested_item.name,
+                        )
+                    )
+                with st.expander("صحت‌سنجی جست‌وجو", icon=":material/search:"):
+                    for requested_item in basket_items:
+                        if requested_item.display_title not in store_missing:
+                            continue
+                        evidence = search_evidence.get(requested_item.raw_text, {}).get(s_name, {})
+                        attempts = evidence.get("queries", [])
+                        query_text = " ← ".join(a.get("query", "") for a in attempts if a.get("query")) or "—"
+                        st.markdown(f"**{requested_item.display_title}**")
+                        st.caption(f"عبارت‌های جست‌وجو: {query_text}")
+                        st.caption(f"تعداد نتایج خام: {evidence.get('candidate_count', 0)}")
         if order:
             status_txt = "✅ کامل" if order.missing_items_count == 0 else f"⚠️ ناقص ({order.missing_items_count} قلم کسری)"
             mov_txt = "بله" if order.meets_mov else f"خیر (حداقل {order.minimum_order_value:,.0f} ت)"
@@ -1158,120 +590,8 @@ if "opt_result" in st.session_state:
             "رسیدن به حداقل سفارش": "بله",
         })
 
-    st.dataframe(comparison_data, width="stretch")
-
-    # -------------------------------------------------------------
-    # Flash Deal Opportunities Advisor (40% - 70% Amazing Deals)
-    # -------------------------------------------------------------
-    deal_opps = getattr(opt_result, "deal_opportunities", [])
-    if deal_opps:
-        st.markdown("---")
-        st.subheader("⚡ فرصت‌های طلایی تخفیف‌های شگفت‌انگیز (۴۰٪ تا ۷۰٪ تخفیف)")
-        st.markdown(
-            "فروشگاه‌ها روزانه تخفیف‌های شگفت‌انگیز فوق‌العاده‌ای (۴۰٪ تا ۷۰٪) ارائه می‌دهند. "
-            "سیستم هوشمند سبد با تحلیل سبد خرید فعلی و وضعیت فروشگاه‌ها، بهترین فرصت‌های سودآور زیر را برای شما شناسایی کرده است:"
-        )
-
-        same_store_opps = [o for o in deal_opps if o.opportunity_type == "same_store_addon"]
-        switch_opps = [o for o in deal_opps if o.opportunity_type == "store_switch_deal"]
-
-        if same_store_opps:
-            st.markdown("##### 🎁 پیشنهادهای شگفت‌انگیز از همین فروشگاه (بدون هزینه ارسال اضافه):")
-            st.caption("این کالاها از همین فروشگاه منتخب شما تخفیف بسیار بالایی دارند و می‌توانید با قیمت بسیار پایین آن‌ها را به سبد خود بیفزایید:")
-            for s_idx, op in enumerate(same_store_opps):
-                benefit_text = (
-                    f"تحویل با همین سفارش بدون هزینه ارسال مازاد | سود تخفیف کالا: {op.deal_nominal_saving:,.0f} تومان | "
-                    f"مبلغ کل جدید سبد: {op.projected_basket_cost:,.0f} تومان"
-                )
-                card_html = render_flash_deal_opportunity_card_html(
-                    title=op.deal_item.title,
-                    platform=op.target_store,
-                    base_price=op.deal_base_price,
-                    discount_price=op.deal_discount_price,
-                    discount_percent=op.deal_discount_percent,
-                    opportunity_type=op.opportunity_type,
-                    benefit_highlight=benefit_text,
-                    image_url=op.deal_item.image_url,
-                    store_title_override=op.target_store_title,
-                )
-                st.markdown(card_html, unsafe_allow_html=True)
-
-                col_btn, _ = st.columns([2, 3])
-                with col_btn:
-                    if st.button(f"➕ افزودن به سبد خرید ({op.deal_discount_price:,.0f} تومان)", key=f"btn_addon_opp_{s_idx}_{op.deal_item.product_id}"):
-                        cur_text = st.session_state.get("user_basket_text", "").strip()
-                        new_text = f"{cur_text}، یک {op.deal_item.title}" if cur_text else f"یک {op.deal_item.title}"
-                        st.session_state["user_basket_text"] = new_text
-
-                        updated_opt, updated_basket, updated_cat = FlashDealAdvisor.apply_opportunity(
-                            opt_result=opt_result,
-                            opportunity=op,
-                            store_infos=store_infos,
-                            basket_items=basket_items,
-                            catalog_matches=catalog_matches,
-                        )
-                        st.session_state["opt_result"] = updated_opt
-                        st.session_state["basket_items"] = updated_basket
-                        st.session_state["catalog_matches"] = updated_cat
-
-                        st.success(f"«{op.deal_item.title}» با تخفیف {op.deal_discount_percent:.0f}٪ به سبد اضافه شد!")
-                        st.rerun()
-
-        if switch_opps:
-            st.markdown("##### 🔄 فرصت‌های طلایی تغییر فروشگاه (سودآوری بسیار بالاتر سبد):")
-            st.caption("اگر فروشگاه خود را عوض کنید و این کالای تخفیف‌دار را هم اضافه کنید، جمع سبد شما بسیار سودآورتر و ارزان‌تر خواهد شد:")
-            for sw_idx, op in enumerate(switch_opps):
-                if op.is_cheaper_total:
-                    benefit_text = (
-                        f"🔥 شگفت‌انگیز: حتی با اضافه کردن این کالا، مبلغ کل سبد در {op.target_store_title} "
-                        f"ارزان‌تر از خرید فعلی تمام می‌شود! (سود کل: {op.projected_basket_savings:,.0f} تومان)"
-                    )
-                else:
-                    benefit_text = (
-                        f"سود کل تخفیف‌ها به {op.projected_basket_savings:,.0f} تومان می‌رسد "
-                        f"({op.net_profit_increase:,.0f} تومان سود خالص بیشتر نسبت به حالت قبل)"
-                    )
-
-                card_html = render_flash_deal_opportunity_card_html(
-                    title=op.deal_item.title,
-                    platform=op.target_store,
-                    base_price=op.deal_base_price,
-                    discount_price=op.deal_discount_price,
-                    discount_percent=op.deal_discount_percent,
-                    opportunity_type=op.opportunity_type,
-                    benefit_highlight=benefit_text,
-                    image_url=op.deal_item.image_url,
-                    store_title_override=op.target_store_title,
-                )
-                st.markdown(card_html, unsafe_allow_html=True)
-
-                col_btn, _ = st.columns([2, 3])
-                with col_btn:
-                    if st.button(f"🔄 انتقال سبد به {op.target_store_title} و افزودن کالا", key=f"btn_switch_opp_{sw_idx}_{op.deal_item.product_id}"):
-                        cur_text = st.session_state.get("user_basket_text", "").strip()
-                        new_text = f"{cur_text}، یک {op.deal_item.title}" if cur_text else f"یک {op.deal_item.title}"
-                        st.session_state["user_basket_text"] = new_text
-
-                        updated_opt, updated_basket, updated_cat = FlashDealAdvisor.apply_opportunity(
-                            opt_result=opt_result,
-                            opportunity=op,
-                            store_infos=store_infos,
-                            basket_items=basket_items,
-                            catalog_matches=catalog_matches,
-                        )
-                        st.session_state["opt_result"] = updated_opt
-                        st.session_state["basket_items"] = updated_basket
-                        st.session_state["catalog_matches"] = updated_cat
-
-                        st.success(f"فروشگاه به {op.target_store_title} تغییر کرد و «{op.deal_item.title}» اضافه شد!")
-                        st.rerun()
-
-    # -------------------------------------------------------------
-    # Section 4: Itemized Audit & Calculation Breakdown
-    # -------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("🔍 روند محاسبات و جزئیات اقلام (Itemized Audit & Calculation Breakdown)")
-
+    with st.expander("جزئیات عددی مقایسه فروشگاه‌ها", expanded=False, icon=":material/table_chart:"):
+        st.dataframe(comparison_data, width="stretch")
 
     def render_store_audit_tab(
         platform: str,
@@ -1280,7 +600,9 @@ if "opt_result" in st.session_state:
         store_infos: dict,
         opt_result: OptimizationResult,
         adapters: dict,
+        search_evidence: dict | None = None,
     ) -> None:
+        search_evidence = search_evidence or {}
         s_info = store_infos.get(platform) if store_infos else None
         single_order = opt_result.single_store_orders.get(platform) if opt_result and opt_result.single_store_orders else None
         adapter = adapters.get(platform) if adapters else None
@@ -1301,7 +623,7 @@ if "opt_result" in st.session_state:
             st.markdown(f"**حداقل سفارش (MOV):** `{mov_value:,.0f} تومان`")
 
         # 2. Visual Catalog Cards with Real Product Images
-        store_cards_html = []
+        store_cards = []
         for item in basket_items:
             match = None
             if catalog_matches and item.raw_text in catalog_matches:
@@ -1310,23 +632,17 @@ if "opt_result" in st.session_state:
                 match = catalog_matches[item.name].get(platform)
 
             if match:
-                card_html = render_jet_product_card_html(
-                    product_title=match.title,
-                    requested_title=item.display_title,
-                    platform=platform,
-                    price=match.discount_price,
-                    base_price=match.base_price,
-                    quantity=item.quantity,
-                    image_url=match.image_url,
-                    is_in_stock=match.is_in_stock,
-                    discount_percent=match.discount_percent,
-                    store_title_override=platform_title,
-                )
-                store_cards_html.append(card_html)
+                store_cards.append({
+                    "item": match,
+                    "requested_title": item.display_title,
+                    "store_title": platform_title,
+                    "quantity": item.quantity,
+                    "unit_options": search_evidence.get(item.raw_text, {}).get(platform, {}).get("unit_options") or [],
+                })
 
-        if store_cards_html:
+        if store_cards:
             with st.expander(f"🖼️ ویترین تصویری کالاهای منطبق در {platform_title}", expanded=True):
-                st.markdown(f'<div class="jet-product-grid">{"".join(store_cards_html)}</div>', unsafe_allow_html=True)
+                render_product_grid(store_cards, platform)
 
         # 3. Itemized audit table
         audit_rows = []
@@ -1352,6 +668,7 @@ if "opt_result" in st.session_state:
 
                 line_tot = match.discount_price * item.quantity
                 line_sav = match.saving_amount * item.quantity
+                unit_text = comparable_price_text(match) or "-"
 
                 audit_rows.append({
                     "قلم درخواستی": item.display_title,
@@ -1359,6 +676,7 @@ if "opt_result" in st.session_state:
                     "حجم/مشخصات انطباق‌یافته": vol_spec,
                     "قیمت پایه واحد (تومان)": f"{match.base_price:,.0f}",
                     "قیمت فروش واحد (تومان)": f"{match.discount_price:,.0f}",
+                    "قیمت قابل مقایسه": unit_text,
                     "تعداد": item.quantity,
                     "مجموع ردیف (تومان)": f"{line_tot:,.0f}",
                     "سود تخفیف (تومان)": f"{line_sav:,.0f}",
@@ -1373,6 +691,7 @@ if "opt_result" in st.session_state:
                     "حجم/مشخصات انطباق‌یافته": vol_spec,
                     "قیمت پایه واحد (تومان)": f"{match.base_price:,.0f}",
                     "قیمت فروش واحد (تومان)": f"{match.discount_price:,.0f}",
+                    "قیمت قابل مقایسه": comparable_price_text(match) or "-",
                     "تعداد": item.quantity,
                     "مجموع ردیف (تومان)": "-",
                     "سود تخفیف (تومان)": "-",
@@ -1386,6 +705,7 @@ if "opt_result" in st.session_state:
                     "حجم/مشخصات انطباق‌یافته": "-",
                     "قیمت پایه واحد (تومان)": "-",
                     "قیمت فروش واحد (تومان)": "-",
+                    "قیمت قابل مقایسه": "-",
                     "تعداد": item.quantity,
                     "مجموع ردیف (تومان)": "-",
                     "سود تخفیف (تومان)": "-",
@@ -1409,17 +729,28 @@ if "opt_result" in st.session_state:
                 st.markdown(f"#### ⚠️ اقلام کسری و موارد عدم انطباق ({missing_count} قلم)")
                 st.markdown("اقلام زیر در این فروشگاه به سبد نهایی اضافه نشدند:")
                 for m_item, m_match in missing_items:
+                    evidence = search_evidence.get(m_item.raw_text, {}).get(platform, {})
+                    attempts = evidence.get("queries", [])
+                    query_text = " ← ".join(a.get("query", "") for a in attempts if a.get("query")) or "—"
                     st.markdown(f"- **{m_item.display_title}**:")
-                    if m_match is None:
+                    st.markdown(f"  - عبارت جست‌وجو: `{query_text}`")
+                    st.markdown(
+                        "  - "
+                        + explain_missing_item(
+                            evidence,
+                            requested_title=m_item.display_title,
+                            product_name=m_item.name,
+                        )
+                    )
+                    if evidence.get("candidate_titles"):
+                        st.caption("نتایج خام: " + "، ".join(evidence["candidate_titles"][:4]))
+                    if m_item.volume_weight is not None:
                         st.markdown(
-                            "  - عدم موجودی یا عدم یافتن کالا در شعبه فعال این فروشگاه.\n"
-                            "  - رد شدن به دلیل عدم انطباق با حجم درخواستی (مثلاً ۱ کیلوگرم به جای ۴ لیتر) یا عدم انطباق درصد چربی و طعم."
+                            "این قلم با حجم/وزن مشخص درخواست شده و تطبیق حجم هم بررسی شده است؛ "
+                            "رد شدن به دلیل عدم انطباق با حجم درخواستی ممکن است."
                         )
                     else:
-                        st.markdown(
-                            f"  - عدم موجودی یا عدم یافتن کالا در شعبه فعال این فروشگاه.\n"
-                            f"  - موجودی کالای «{m_match.title}» در انبار شعبه به پایان رسیده است."
-                        )
+                        st.caption("حجم یا وزن مشخص نشده بود؛ اندازه‌های مختلف با همان نام کالا قابل‌قبول‌اند.")
 
         # 5. Delivery tier calculation expander
         with st.expander("🚚 روند محاسبه هزینه ارسال و حداقل سفارش (Delivery Tiers & MOV)", expanded=False):
@@ -1473,18 +804,17 @@ if "opt_result" in st.session_state:
         basket_items: list,
         catalog_matches: dict,
         adapters: dict,
+        search_evidence: dict | None = None,
     ) -> None:
-        st.markdown("#### 🏆 سبد بهینه نهایی (تخصیص هوشمند)")
-        st.markdown("مدل برنامه‌ریزی خطی عدد صحیح (MILP) هزینه خرید، ارسال و جریمه تفکیک را بهینه کرده است:")
-        st.latex(r"\min \left[ \sum_{s \in S} \left( \sum_{i \in I_s} \text{Price}(i, s) \times q_i + \text{DeliveryFee}_s(\text{Subtotal}_s) \right) + \text{SplitPenalty} \times \mathbb{I}_{|S| > 1} \right]")
+        search_evidence = search_evidence or {}
+        st.markdown("#### 🏆 سبد پیشنهادی")
 
         # -------------------------------------------------------------
         # Visual Product Cards Gallery (Digikala Jet Aesthetics)
         # -------------------------------------------------------------
-        st.markdown("##### 🛍️ ویترین تصویری کالاهای برگزیده سبد بهینه (مشابه دیجی‌کالا جت):")
-        st.caption("تصاویر واقعی، قیمت تخفیف‌دار و فروشگاه برگزیده هر قلم از سفارش شما:")
+        st.markdown("##### کالاهای انتخاب‌شده")
 
-        visual_cards_html = []
+        visual_cards = []
         if basket_items and opt_result and opt_result.optimal_orders:
             for item in basket_items:
                 found_asgn = None
@@ -1506,19 +836,13 @@ if "opt_result" in st.session_state:
                         break
 
                 if found_asgn and winning_store_title:
-                    card_html = render_jet_product_card_html(
-                        product_title=found_asgn.item.title,
-                        requested_title=item.display_title,
-                        platform=winning_platform or "digikala_jet",
-                        price=found_asgn.item.discount_price,
-                        base_price=found_asgn.item.base_price,
-                        quantity=found_asgn.quantity,
-                        image_url=found_asgn.item.image_url,
-                        is_in_stock=found_asgn.item.is_in_stock,
-                        discount_percent=found_asgn.item.discount_percent,
-                        store_title_override=winning_store_title,
-                    )
-                    visual_cards_html.append(card_html)
+                    visual_cards.append({
+                        "item": found_asgn.item,
+                        "requested_title": item.display_title,
+                        "store_title": winning_store_title,
+                        "quantity": found_asgn.quantity,
+                        "unit_options": search_evidence.get(item.raw_text, {}).get(winning_platform, {}).get("unit_options") or [],
+                    })
 
         if not basket_items and opt_result and opt_result.optimal_orders:
             for order in opt_result.optimal_orders:
@@ -1526,27 +850,19 @@ if "opt_result" in st.session_state:
                 store_title = adapter.platform_title_fa if adapter else order.platform
                 if order.items:
                     for asgn in order.items:
-                        card_html = render_jet_product_card_html(
-                            product_title=asgn.item.title,
-                            requested_title=asgn.item.title,
-                            platform=order.platform,
-                            price=asgn.item.discount_price,
-                            base_price=asgn.item.base_price,
-                            quantity=asgn.quantity,
-                            image_url=asgn.item.image_url,
-                            is_in_stock=asgn.item.is_in_stock,
-                            discount_percent=asgn.item.discount_percent,
-                            store_title_override=store_title,
-                        )
-                        visual_cards_html.append(card_html)
+                        visual_cards.append({
+                            "item": asgn.item,
+                            "requested_title": asgn.item.title,
+                            "store_title": store_title,
+                            "quantity": asgn.quantity,
+                        })
 
-        if visual_cards_html:
-            grid_container_html = f'<div class="jet-product-grid">{"".join(visual_cards_html)}</div>'
-            st.markdown(grid_container_html, unsafe_allow_html=True)
+        if visual_cards:
+            render_product_grid(visual_cards, "optimal")
         else:
             st.info("اقلامی برای نمایش تصویری در سبد برگزیده ثبت نشده است.")
 
-        st.markdown("##### 📋 جدول اقلام برگزیده در سبد نهایی:")
+        st.markdown("##### اقلام سبد پیشنهادی")
         optimal_table_rows = []
 
         if opt_result and opt_result.optimal_orders:
@@ -1568,11 +884,12 @@ if "opt_result" in st.session_state:
                         break
 
                 if found_asgn and winning_store_title:
-                    optimal_table_rows.append({
+                        optimal_table_rows.append({
                         "قلم درخواستی": item.display_title,
                         "فروشگاه برنده": winning_store_title,
-                        "کالای برگزیده (SKU)": found_asgn.item.title,
+                        "کالا": found_asgn.item.title,
                         "قیمت واحد (تومان)": f"{found_asgn.item.discount_price:,.0f}",
+                        "قیمت قابل مقایسه": comparable_price_text(found_asgn.item) or "-",
                         "تعداد": found_asgn.quantity,
                         "مجموع ردیف (تومان)": f"{found_asgn.line_total:,.0f}",
                         "سود تخفیف (تومان)": f"{found_asgn.nominal_saving:,.0f}",
@@ -1581,8 +898,9 @@ if "opt_result" in st.session_state:
                     optimal_table_rows.append({
                         "قلم درخواستی": item.display_title,
                         "فروشگاه برنده": "❌ عدم تامین",
-                        "کالای برگزیده (SKU)": "❌ هیچ فروشگاهی این کالا را تامین نکرد",
+                        "کالا": "❌ تأمین نشد",
                         "قیمت واحد (تومان)": "-",
+                        "قیمت قابل مقایسه": "-",
                         "تعداد": item.quantity,
                         "مجموع ردیف (تومان)": "-",
                         "سود تخفیف (تومان)": "-",
@@ -1592,8 +910,9 @@ if "opt_result" in st.session_state:
                 optimal_table_rows.append({
                     "قلم درخواستی": item.display_title,
                     "فروشگاه برنده": "❌ عدم تامین",
-                    "کالای برگزیده (SKU)": "❌ هیچ فروشگاهی این کالا را تامین نکرد",
+                    "کالا": "❌ تأمین نشد",
                     "قیمت واحد (تومان)": "-",
+                    "قیمت قابل مقایسه": "-",
                     "تعداد": item.quantity,
                     "مجموع ردیف (تومان)": "-",
                     "سود تخفیف (تومان)": "-",
@@ -1608,8 +927,9 @@ if "opt_result" in st.session_state:
                         optimal_table_rows.append({
                             "قلم درخواستی": asgn.item.title,
                             "فروشگاه برنده": store_title,
-                            "کالای برگزیده (SKU)": asgn.item.title,
+                            "کالا": asgn.item.title,
                             "قیمت واحد (تومان)": f"{asgn.item.discount_price:,.0f}",
+                            "قیمت قابل مقایسه": comparable_price_text(asgn.item) or "-",
                             "تعداد": asgn.quantity,
                             "مجموع ردیف (تومان)": f"{asgn.line_total:,.0f}",
                             "سود تخفیف (تومان)": f"{asgn.nominal_saving:,.0f}",
@@ -1620,7 +940,7 @@ if "opt_result" in st.session_state:
         else:
             st.warning("هیچ قلم کالایی در سبد بهینه ثبت نشده است.")
 
-        st.markdown("##### 📦 کارت‌های تفکیک سفارش (Multi-Store Split Cards):")
+        st.markdown("##### جمع سفارش‌ها")
         if opt_result and opt_result.optimal_orders:
             cols = st.columns(max(1, len(opt_result.optimal_orders)))
             for idx, order in enumerate(opt_result.optimal_orders):
@@ -1642,36 +962,79 @@ if "opt_result" in st.session_state:
         else:
             st.info("سفارشی در سبد بهینه ثبت نشده است.")
 
-    tab_opt, tab_snapp, tab_jet, tab_okala, tab_tapsi = st.tabs([
-        "🏆 سبد بهینه نهایی (تخصیص هوشمند)",
-        "🟡 اسنپ‌مارکت (SnappMarket)",
-        "🔴 دیجی‌کالا جت (Digikala Jet)",
-        "🟢 افق کوروش / اکالا (Okala)",
-        "🟠 تپسی مارکت (Tapsi Market)",
-    ])
+    with st.expander("جزئیات فروشگاه‌ها و صحت‌سنجی جست‌وجو", expanded=False, icon=":material/fact_check:"):
+        tab_opt, tab_snapp, tab_jet, tab_okala, tab_tapsi = st.tabs([
+            "🏆 سبد بهینه نهایی (تخصیص هوشمند)",
+            "🟡 اسنپ‌مارکت (SnappMarket)",
+            "🔴 دیجی‌کالا جت (Digikala Jet)",
+            "🟢 افق کوروش / اکالا (Okala)",
+            "🟠 تپسی مارکت (Tapsi Market)",
+        ])
 
-    with tab_opt:
-        render_optimal_basket_tab(opt_result, basket_items, catalog_matches, adapters)
+        with tab_opt:
+            render_optimal_basket_tab(opt_result, basket_items, catalog_matches, adapters, search_evidence)
 
-    with tab_snapp:
-        render_store_audit_tab("snapp_market", basket_items, catalog_matches, store_infos, opt_result, adapters)
+        with tab_snapp:
+            render_store_audit_tab("snapp_market", basket_items, catalog_matches, store_infos, opt_result, adapters, search_evidence)
 
-    with tab_jet:
-        render_store_audit_tab("digikala_jet", basket_items, catalog_matches, store_infos, opt_result, adapters)
+        with tab_jet:
+            render_store_audit_tab("digikala_jet", basket_items, catalog_matches, store_infos, opt_result, adapters, search_evidence)
 
-    with tab_okala:
-        render_store_audit_tab("okala", basket_items, catalog_matches, store_infos, opt_result, adapters)
+        with tab_okala:
+            render_store_audit_tab("okala", basket_items, catalog_matches, store_infos, opt_result, adapters, search_evidence)
 
-    with tab_tapsi:
-        render_store_audit_tab("tapsi_market", basket_items, catalog_matches, store_infos, opt_result, adapters)
+        with tab_tapsi:
+            render_store_audit_tab("tapsi_market", basket_items, catalog_matches, store_infos, opt_result, adapters, search_evidence)
+
+    # Optional deals belong at the end of the decision flow so they do not
+    # distract from the cheapest-basket result.
+    deal_opps = getattr(opt_result, "deal_opportunities", [])
+    if deal_opps:
+        with st.expander("پیشنهادهای تخفیفی اختیاری", expanded=True, icon=":material/local_offer:"):
+            st.caption("این پیشنهادها اختیاری‌اند و قبل از افزودن کالا به سبد نمایش داده می‌شوند.")
+            for deal_idx, opportunity in enumerate(deal_opps):
+                is_switch = opportunity.opportunity_type == "store_switch_deal"
+                action_label = (
+                    f"انتقال به {opportunity.target_store_title} و افزودن"
+                    if is_switch
+                    else f"افزودن با {opportunity.deal_discount_percent:.0f}٪ تخفیف"
+                )
+                with st.container(border=True):
+                    title_col, action_col = st.columns([3, 1], vertical_alignment="center")
+                    with title_col:
+                        st.markdown(f"**{opportunity.deal_item.title}**")
+                        st.caption(
+                            f"{opportunity.target_store_title} · "
+                            f"قیمت نهایی {opportunity.deal_discount_price:,.0f} تومان · "
+                            f"صرفه‌جویی {opportunity.deal_nominal_saving:,.0f} تومان"
+                        )
+                    with action_col:
+                        action_key_prefix = "btn_switch_opp" if is_switch else "btn_addon_opp"
+                        if st.button(action_label, key=f"{action_key_prefix}_{deal_idx}_{opportunity.deal_item.product_id}"):
+                            current_text = st.session_state.get("user_basket_text", "").strip()
+                            added_text = f"یک {opportunity.deal_item.title}"
+                            new_text = f"{current_text}، {added_text}" if current_text else added_text
+                            st.session_state["user_basket_text"] = new_text
+                            st.session_state["_sync_basket_editor"] = True
+                            updated_opt, updated_basket, updated_catalog = FlashDealAdvisor.apply_opportunity(
+                                opt_result=opt_result,
+                                opportunity=opportunity,
+                                store_infos=store_infos,
+                                basket_items=basket_items,
+                                catalog_matches=catalog_matches,
+                            )
+                            st.session_state["opt_result"] = updated_opt
+                            st.session_state["basket_items"] = updated_basket
+                            st.session_state["catalog_matches"] = updated_catalog
+                            st.rerun()
+
 
     # -------------------------------------------------------------
     # Section 5: Cart Population & Payment Handoff
     # -------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("🛒 اجرای سفارش و شارژ مستقیم سبد خرید")
+    st.subheader("🛒 آمادهٔ خرید")
 
-    st.write("با کلیک بر روی دکمه زیر، اقلام تعیین‌شده به طور خودکار به سبد حساب‌های کاربری شما در هر پلتفرم اضافه خواهند شد:")
+    st.caption("وقتی آماده‌ای، کالاها را به سبد فروشگاه‌های منتخب منتقل کن و پرداخت را ادامه بده.")
 
     if st.button("🚀 افزودن مستقیم به سبد خرید و ایجاد لینک‌های پرداخت", type="primary"):
         dispatcher = CartDispatcher(adapters=adapters)

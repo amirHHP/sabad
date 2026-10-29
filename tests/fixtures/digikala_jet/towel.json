@@ -1,0 +1,66 @@
+{
+  "data": {
+    "result": [
+      {
+        "id": "hand",
+        "title": "حوله دستی کوچک",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 1800000,
+          "discount": 300000,
+          "discount_percentage": 16.7
+        },
+        "stock": {
+          "has_stock": false
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "sport",
+        "title": "حوله ورزشی",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 2200000,
+          "discount": 200000,
+          "discount_percentage": 9.1
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "bath",
+        "title": "حوله حمام بزرگ",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 4500000,
+          "discount": 600000,
+          "discount_percentage": 13.3
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "mop",
+        "title": "تی حوله‌ای میکروفایبر",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 900000,
+          "discount": 100000,
+          "discount_percentage": 11.1
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      }
+    ]
+  }
+}

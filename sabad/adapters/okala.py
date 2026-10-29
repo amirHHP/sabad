@@ -102,7 +102,7 @@ class OkalaAdapter(BaseStoreAdapter):
                         delivery_tiers=tiers
                     )
         except Exception as e:
-            print(f"Error resolving Okala nearby store: {e}")
+            self.note_store_error("store_info", e)
 
         # Fallback if connection fails
         return StoreInfo(
@@ -140,6 +140,13 @@ class OkalaAdapter(BaseStoreAdapter):
             if resp.status_code == 200:
                 payload = resp.json()
                 entities = payload.get("entities", [])
+                if not entities and isinstance(payload.get("data"), dict):
+                    data = payload["data"]
+                    entities = data.get("entities") or data.get("products") or data.get("items") or data.get("results") or []
+                if isinstance(entities, dict):
+                    entities = entities.get("items") or entities.get("results") or entities.get("entities") or []
+                if not isinstance(entities, list):
+                    entities = []
                 
                 for e in entities:
                     raw_price = e.get("price")
@@ -170,7 +177,7 @@ class OkalaAdapter(BaseStoreAdapter):
 
                     product_id = str(e.get("id"))
                     name = e.get("name") or e.get("highlightName") or ""
-                    img = e.get("imageUrl") or ""
+                    img = self.first_url(e.get("imageUrl") or e.get("images") or e.get("image"))
 
                     quantity_val = e.get("quantity")
                     try:
@@ -191,10 +198,11 @@ class OkalaAdapter(BaseStoreAdapter):
                         discount_percent=discount_pct,
                         is_flash_deal=discount_pct >= 25.0,
                         is_in_stock=is_in_stock,
-                        image_url=img
+                        image_url=img,
+                        product_url=self.first_url(e.get("url") or e.get("productUrl") or e.get("product_url") or e.get("webUrl") or e.get("link")),
                     ))
         except Exception as err:
-            print(f"Error searching Okala: {err}")
+            self.note_store_error("search", err, reraise_timeout=True)
 
         return items
 
@@ -256,10 +264,11 @@ class OkalaAdapter(BaseStoreAdapter):
                         discount_percent=discount_pct,
                         is_flash_deal=True,
                         is_in_stock=is_in_stock,
-                        image_url=e.get("imageUrl") or ""
+                        image_url=self.first_url(e.get("imageUrl") or e.get("images") or e.get("image")),
+                        product_url=self.first_url(e.get("url") or e.get("productUrl") or e.get("product_url") or e.get("webUrl") or e.get("link")),
                     ))
         except Exception as err:
-            print(f"Error fetching Okala flash deals: {err}")
+            self.note_store_error("flash_deals", err)
 
         return deals
 

@@ -1,0 +1,35 @@
+{
+  "data": {
+    "vendor_product_variations": {
+      "items": [
+        {
+          "id": 501,
+          "products": [
+            {
+              "id": "e6",
+              "title": "تخم مرغ ۶ عددی",
+              "brand": null,
+              "price": 90000,
+              "discount": 0,
+              "stock": 12,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "e20",
+              "title": "تخم مرغ ۲۰ عددی",
+              "brand": null,
+              "price": 240000,
+              "discount": 40000,
+              "stock": 5,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

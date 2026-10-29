@@ -22,6 +22,15 @@ from sabad.models.dispatch import CartItemMutation, CartMutationResult
 class TapsiMarketAdapter(BaseStoreAdapter):
     """Live API client for Tapsi Market / Food quick-commerce catalog."""
 
+    _RESTAURANT_TERMS = (
+        "رستوران", "کافه", "فست فود", "فست‌فود", "پیتزا", "برگر",
+        "ساندویچ", "آشپزخانه", "کترینگ", "کباب", "غذا", "restaurant", "cafe",
+        "fast food", "pizza", "burger", "sandwich", "kitchen", "catering",
+    )
+    _MARKET_TERMS = (
+        "مارکت", "سوپر", "هایپر", "فروشگاه", "بقالی", "میوه", "پروتئین",
+    )
+
     def __init__(self, base_url: str = TAPSI_MARKET_BASE_URL):
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(
@@ -43,6 +52,56 @@ class TapsiMarketAdapter(BaseStoreAdapter):
     def is_authenticated(self) -> bool:
         return SessionManager.is_authenticated(self.platform_name)
 
+    def _is_market_vendor(
+        self,
+        vendor_info: Dict[str, Any],
+        product_info: Dict[str, Any],
+        *,
+        enforce_cached_vendor: bool = True,
+    ) -> bool:
+        """Reject restaurant results returned by Tapsi's shared discovery API."""
+        vendor_code = str(vendor_info.get("vendorCode") or "")
+        # The product endpoint is global across Food and Market.  When the
+        # caller asks for the resolved branch we can enforce its code; search
+        # itself may legitimately return a different market branch code.
+        if enforce_cached_vendor and self._cached_store_id and self._cached_store_id != "tapsi_market_default":
+            if vendor_code and vendor_code != self._cached_store_id:
+                return False
+
+        text_parts = []
+        typed_fields = []
+        for source in (vendor_info, product_info):
+            for key in (
+                "title", "name", "vendorType", "type", "businessType",
+                "category", "categoryName", "serviceType", "vertical",
+            ):
+                value = source.get(key)
+                if value is not None:
+                    normalized = str(value).strip().lower()
+                    text_parts.append(normalized)
+                    if key in {"vendorType", "type", "businessType", "serviceType", "vertical"}:
+                        typed_fields.append(normalized)
+        searchable = " ".join(text_parts)
+        if (
+            not enforce_cached_vendor
+            and self._cached_store_id
+            and self._cached_store_id != "tapsi_market_default"
+            and vendor_code
+            and vendor_code != self._cached_store_id
+            and not any(term in searchable for term in self._MARKET_TERMS)
+        ):
+            # A code mismatch without any market identity is more likely a
+            # restaurant result from the shared discovery endpoint.
+            return False
+        if any(value in {"food", "restaurant", "cafe", "resturant", "غذایی", "رستورانی"} for value in typed_fields):
+            return False
+        if any(term in searchable for term in self._RESTAURANT_TERMS):
+            return False
+        # Unknown vendor metadata is allowed for backward compatibility with
+        # the API and existing test fixtures. The restaurant deny-list and the
+        # resolved branch ID above are the authoritative guards.
+        return True
+
     async def get_store_info(self, lat: float, lng: float) -> Optional[StoreInfo]:
         """Resolves serving grocery or market vendor, live delivery fee, and MOV."""
         search_vendor_url = (
@@ -60,10 +119,20 @@ class TapsiMarketAdapter(BaseStoreAdapter):
                     for v in vendors:
                         v_info = v.get("vendorInfo", {})
                         title = v_info.get("title", "")
-                        if any(k in title for k in ["مارکت", "هایپر", "سوپر", "پروتئین", "میوه"]):
+                        if not self._is_market_vendor(v_info, {}):
+                            continue
+                        if any(k in title for k in self._MARKET_TERMS):
                             selected_vendor = v
                             break
-                    target_vendor = selected_vendor or vendors[0]
+                    target_vendor = selected_vendor or next(
+                        (v for v in vendors if self._is_market_vendor(v.get("vendorInfo", {}), {})),
+                        None,
+                    )
+                    if target_vendor is None:
+                        # The discovery endpoint returned Food-only vendors;
+                        # keep the fallback branch instead of binding the
+                        # session to a restaurant and filtering the catalog.
+                        raise ValueError("no market vendor in discovery response")
                     v_code = str(target_vendor.get("vendorCode") or "tapsi_market")
                     v_info = target_vendor.get("vendorInfo", {})
                     v_title = v_info.get("title", "تپسی مارکت")
@@ -106,7 +175,7 @@ class TapsiMarketAdapter(BaseStoreAdapter):
                         delivery_tiers=tiers,
                     )
         except Exception as e:
-            print(f"Error fetching Tapsi Market store info: {e}")
+            self.note_store_error("store_info", e)
 
         # Graceful fallback
         return StoreInfo(
@@ -134,9 +203,19 @@ class TapsiMarketAdapter(BaseStoreAdapter):
             if resp.status_code == 200:
                 payload = resp.json()
                 results = payload.get("data", [])
+                if isinstance(results, dict):
+                    results = results.get("items") or results.get("products") or results.get("results") or results.get("data") or []
+                if not isinstance(results, list):
+                    results = []
                 for r in results:
                     p_info = r.get("productInfo", {})
                     v_info = r.get("vendorInfo", {})
+                    # Product discovery is shared by Food and Market and may
+                    # return a market branch code different from the nearby
+                    # vendor code.  Keep the restaurant deny-list active, but
+                    # do not drop every grocery result on a code mismatch.
+                    if not self._is_market_vendor(v_info, p_info, enforce_cached_vendor=False):
+                        continue
 
                     base_price = float(p_info.get("price") or 0.0)
                     discount_price = float(p_info.get("priceAfterDiscount") or base_price or 0.0)
@@ -156,8 +235,7 @@ class TapsiMarketAdapter(BaseStoreAdapter):
                     v_status = v_info.get("vendorStatus", True)
                     is_in_stock = (discount_price > 0) and (v_status is True or v_status == "Open")
 
-                    images = p_info.get("images", [])
-                    image_url = images[0] if images and isinstance(images, list) else ""
+                    image_url = self.first_url(p_info.get("images") or p_info.get("image") or p_info.get("imageUrl"))
 
                     p_id = str(p_info.get("id") or p_info.get("headerId") or r.get("id") or "")
                     v_code = str(v_info.get("vendorCode") or self._cached_store_id or "tapsi_market")
@@ -176,9 +254,10 @@ class TapsiMarketAdapter(BaseStoreAdapter):
                         is_flash_deal=is_flash,
                         is_in_stock=is_in_stock,
                         image_url=image_url,
+                        product_url=self.first_url(p_info.get("url") or p_info.get("productUrl") or p_info.get("product_url") or p_info.get("webUrl") or p_info.get("link")),
                     ))
         except Exception as e:
-            print(f"Error searching Tapsi Market: {e}")
+            self.note_store_error("search", e, reraise_timeout=True)
 
         # Prioritize in-stock items first
         items.sort(key=lambda x: not x.is_in_stock)

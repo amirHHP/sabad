@@ -1,0 +1,40 @@
+{
+  "entities": [
+    {
+      "id": "hand",
+      "name": "حوله دستی کوچک",
+      "price": 1800000,
+      "okPrice": 1500000,
+      "discountPercent": 16.7,
+      "quantity": 0,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "sport",
+      "name": "حوله ورزشی",
+      "price": 2200000,
+      "okPrice": 2000000,
+      "discountPercent": 9.1,
+      "quantity": 4,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "bath",
+      "name": "حوله حمام بزرگ",
+      "price": 4500000,
+      "okPrice": 3900000,
+      "discountPercent": 13.3,
+      "quantity": 2,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "mop",
+      "name": "تی حوله‌ای میکروفایبر",
+      "price": 900000,
+      "okPrice": 800000,
+      "discountPercent": 11.1,
+      "quantity": 7,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    }
+  ]
+}

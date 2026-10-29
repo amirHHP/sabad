@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "id": "p500",
+      "productInfo": {
+        "id": "p500",
+        "name": "ماکارونی ۵۰۰ گرمی",
+        "price": 45000,
+        "priceAfterDiscount": 45000,
+        "discountRatio": 0.0,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "p700",
+      "productInfo": {
+        "id": "p700",
+        "name": "ماکارونی ۷۰۰ گرمی",
+        "price": 62000,
+        "priceAfterDiscount": 56000,
+        "discountRatio": 9.7,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    }
+  ]
+}

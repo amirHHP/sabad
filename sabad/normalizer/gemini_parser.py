@@ -4,6 +4,7 @@ Uses Google Gemini (e.g. gemini-3.5-flash-lite) to accurately extract product na
 brands, quantities, volumes, weights, fat percentages, and categories from colloquial Persian.
 """
 
+import base64
 import json
 import logging
 from typing import List, Optional
@@ -11,6 +12,7 @@ import httpx
 
 import os
 import sabad.config as config
+from sabad.security import redact_secrets
 
 GEMINI_API_KEY = getattr(config, "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 GEMINI_MODEL = getattr(config, "GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")).strip()
@@ -35,9 +37,17 @@ SYSTEM_PROMPT = """تو یک سیستم هوشمند و دقیق برای است
 - fat_percentage: فقط در صورتی که در متن ورودی کاربر صراحتاً درصد چربی یا کلماتی مانند «پرچرب»، «کم‌چرب» یا «نیم‌چرب» برای لبنیات قید شده باشد (مثلاً پرچرب = 3.0، کم‌چرب = 1.5، یا درصدی مانند 1.5%). اگر کاربر در متن به چربی اشاره نکرده است (مثلا فقط گفته پنیر ویلی ۳۵۰ گرمی)، حتماً مقدار null باشد.
 - category: دسته‌بندی کلی کالا، شامل یکی از موارد: "لبنیات"، "شوینده"، "خواربار"، "سلولزی"، "کنسرو"، "نوشیدنی"، "پروتئینی"، "تنقلات".
 
-قواعد لیست‌های گفته‌شده:
-- تکرار «میخوام» یا «می‌خوام» جداکننده قلم است. «خوب» و «من» را قلم حساب نکن. «پتی بور میخوام شیر میخوام خامه میخوام پنیر ماسکارپونه میخوام شکر میخوام پودر کاکائو میخوام» شش قلم است: پتی بور، شیر، خامه، پنیر ماسکارپونه، شکر، پودر کاکائو.
+قواعد فهم درخواست‌های کوتاه و عمومی:
+- اگر کاربر فقط «شامپو» گفت، منظور پیش‌فرض «شامپو سر/مو» در اندازه کوچک یا معمولی و ارزان‌ترین گزینه است؛ آن را با شامپو بدن، شامپو فرش یا گالن بزرگ قاطی نکن.
+- اگر کاربر فقط «حوله» گفت، منظور پیش‌فرض حوله دستی کوچک و ارزان است؛ تی حوله‌ای، دستمال نظافت، حوله میکروفایبر و حوله حمام بزرگ انتخاب نشود.
+- اگر کاربر فقط «واکس» گفت، منظور پیش‌فرض واکس کفش ساده و ارزان است؛ واکس خودرو، پولیش ماشین و محصولات کارواش انتخاب نشود.
+- هر عبارت جداشده با «و» را به قلم‌های مستقل تبدیل کن؛ مثلاً «شامپو و واکس و شامپو» دقیقاً سه قلم «شامپو»، «واکس»، «شامپو» است.
+- تکرار «میخوام» یا «می‌خوام» هم جداکننده قلم است. «خوب» و «من» را قلم حساب نکن. «پتی بور میخوام شیر میخوام خامه میخوام پنیر ماسکارپونه میخوام شکر میخوام پودر کاکائو میخوام» شش قلم است: پتی بور، شیر، خامه، پنیر ماسکارپونه، شکر، پودر کاکائو.
 - «پتی بور» بیسکویت است و نامش باید «پتی بور» بماند. «پنیر ماسکارپونه» را به پنیر ساده تقلیل نده. «پودر کاکائو» شیر کاکائو نیست.
+- «دلم می‌خوام ترامیسو درست کنم» قصد آشپزی است، نه کالا. در «من دلم می‌خوام ترامیسو درست کنم. شیر می‌خوام، خامه می‌خوام، پنیر ماسکارپونه می‌خوام. همین دیگه.» فقط سه قلم برگردان: شیر، خامه، پنیر ماسکارپونه.
+- اگر کاربر فقط نام عمومی کالا را گفت (مثل ماکارونی، تخم مرغ یا شامپو)، برند خاص یا مدل ویژه اختراع نکن؛ حجم را null بگذار تا موتور جست‌وجو اندازه مشترک و ارزان‌ترین کالای موجود را پیدا کند.
+- «ارزان‌ترین» یعنی کمترین قیمت کالای منطبق و موجود، نه اولین نتیجه یا بیشترین تخفیف ظاهری.
+- نام کالا را به شکل عمومی و قابل جست‌وجو نگه دار: برای این مثال‌ها name به‌ترتیب «ماکارونی»، «حوله» و «شامپو» باشد.
 """
 
 RESPONSE_SCHEMA = {
@@ -163,7 +173,9 @@ def parse_grocery_input_gemini(
             resp = client.post(url, json=payload)
             if resp.status_code != 200:
                 logger.warning(
-                    f"Gemini API returned status {resp.status_code}: {resp.text[:200]}"
+                    "Gemini API returned status %s: %s",
+                    resp.status_code,
+                    redact_secrets(resp.text[:200]),
                 )
                 return None
 
@@ -185,7 +197,7 @@ def parse_grocery_input_gemini(
             return None
 
     except Exception as e:
-        logger.warning(f"Gemini semantic parsing failed: {e}")
+        logger.warning("Gemini semantic parsing failed: %s", redact_secrets(str(e)))
         return None
 
 
@@ -222,7 +234,9 @@ async def async_parse_grocery_input_gemini(
             resp = await client.post(url, json=payload)
             if resp.status_code != 200:
                 logger.warning(
-                    f"Gemini API returned status {resp.status_code}: {resp.text[:200]}"
+                    "Gemini API returned status %s: %s",
+                    resp.status_code,
+                    redact_secrets(resp.text[:200]),
                 )
                 return None
 
@@ -244,5 +258,65 @@ async def async_parse_grocery_input_gemini(
             return None
 
     except Exception as e:
-        logger.warning(f"Async Gemini semantic parsing failed: {e}")
+        logger.warning("Async Gemini semantic parsing failed: %s", redact_secrets(str(e)))
+        return None
+
+
+def transcribe_audio_gemini(
+    audio_bytes: bytes,
+    mime_type: str = "audio/wav",
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Optional[str]:
+    """Transcribe a short Persian voice note with Gemini.
+
+    The UI keeps this optional: when no Gemini key is configured the caller can
+    continue with typed input. Keeping transcription here means the Streamlit
+    layer does not need to know anything about provider payloads or credentials.
+    """
+    raw_key = api_key if api_key is not None else (
+        getattr(config, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    )
+    key = raw_key.strip() if raw_key else ""
+    if not key or not audio_bytes:
+        return None
+
+    model_name = (
+        model
+        or getattr(config, "GEMINI_MODEL", "")
+        or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    ).strip()
+    url = GEMINI_API_URL_TEMPLATE.format(model=model_name, key=key)
+    payload = {
+        "systemInstruction": {
+            "parts": [{
+                "text": (
+                    "صدای کاربر را به متن فارسی تبدیل کن. فقط متن پیاده‌سازی‌شده را "
+                    "برگردان، بدون توضیح، بدون نقل قول و بدون علامت‌گذاری اضافی."
+                )
+            }]
+        },
+        "contents": [{"parts": [{
+            "inlineData": {
+                "mimeType": mime_type or "audio/wav",
+                "data": base64.b64encode(audio_bytes).decode("ascii"),
+            }
+        }]}],
+        "generationConfig": {"temperature": 0.0},
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(url, json=payload)
+            if resp.status_code != 200:
+                logger.warning("Gemini audio transcription returned %s", resp.status_code)
+                return None
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            transcript = parts[0].get("text", "").strip() if parts else ""
+            return transcript or None
+    except Exception as exc:
+        logger.warning("Gemini audio transcription failed: %s", redact_secrets(str(exc)))
         return None

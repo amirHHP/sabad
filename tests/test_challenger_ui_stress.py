@@ -98,6 +98,7 @@ def test_stress_streamlit_app_alias_repeated_reruns():
 def test_stress_empty_and_whitespace_inputs():
     """Test empty, whitespace, and newline-only input strings."""
     at = AppTest.from_file(str(BASE_DIR / "app.py"))
+    at.session_state["show_editor"] = True
     at.run(timeout=30)
     assert len(at.exception) == 0
 
@@ -113,7 +114,7 @@ def test_stress_empty_and_whitespace_inputs():
     # Find the primary action button
     optimize_btn = None
     for btn in at.button:
-        if "استعلام زنده" in btn.label:
+        if btn.key == "compare_basket":
             optimize_btn = btn
             break
 
@@ -134,6 +135,7 @@ def test_stress_extremely_long_grocery_input():
     assert len(giant_input) > 2500
 
     at = AppTest.from_file(str(BASE_DIR / "app.py"))
+    at.session_state["show_editor"] = True
     at.run(timeout=30)
     assert len(at.exception) == 0
 
@@ -141,7 +143,7 @@ def test_stress_extremely_long_grocery_input():
     assert len(at.exception) == 0
 
     # Ensure items were parsed and rendered into badges without crash
-    assert len(at.info) >= 1
+    assert len([b for b in at.button if b.key and b.key.startswith("del_cart_item_")]) >= 1
 
 
 def test_stress_adversarial_and_special_character_inputs():
@@ -156,6 +158,7 @@ def test_stress_adversarial_and_special_character_inputs():
 
     for adv_text in adversarial_texts:
         at = AppTest.from_file(str(BASE_DIR / "app.py"))
+        at.session_state["show_editor"] = True
         at.run(timeout=30)
         at.text_area[0].set_value(adv_text).run(timeout=30)
         assert len(at.exception) == 0, f"Failed on adversarial text: {adv_text}"
@@ -687,25 +690,13 @@ st.session_state['user3_is_auth'] = SessionManager.is_authenticated('{platform}'
 # 4. Sidebar OTP & Login UI Stress
 # ============================================================================
 
-def test_sidebar_otp_login_flow_headless():
-    """Test sidebar OTP phone input validation and interaction flow headlessly."""
-    at = AppTest.from_file(str(BASE_DIR / "app.py"))
-    at.run(timeout=30)
-    assert len(at.exception) == 0
-
-    # Expand the OTP expander if present
-    # Check phone input field exists
-    phone_input = None
-    for ti in at.sidebar.text_input:
-        if "phone_input" in getattr(ti, "key", ""):
-            phone_input = ti
-            break
-
-    if phone_input:
-        # Invalid phone (< 10 digits)
-        phone_input.set_value("0912").run(timeout=30)
-        assert len(at.exception) == 0
-
-        # Valid phone
-        phone_input.set_value("09123456789").run(timeout=30)
-        assert len(at.exception) == 0
+def test_settings_otp_login_flow_headless():
+    """Store login is only available after opening settings; reject short phones."""
+    at = AppTest.from_file(str(BASE_DIR / "app.py")).run(timeout=30)
+    assert not at.text_input
+    at.button(key="open_settings").click().run()
+    assert not at.exception
+    at.text_input(key="phone_input_snapp_market").set_value("0912").run()
+    at.button(key="send_otp_btn_snapp_market").click().run()
+    assert not at.exception
+    assert any("شماره موبایل معتبر" in warning.value for warning in at.warning)

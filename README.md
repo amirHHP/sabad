@@ -4,6 +4,8 @@
 
 Sabad operates on **100% live networks** without mock stubs or synthetic databases. It parses Persian natural language grocery lists, queries real store catalogs concurrently, runs a mathematical optimization model (MILP / Branch-and-Bound), audits **"تله‌های شگفت‌انگیز" (Flash Deal Marketing Traps)**, and directly executes authenticated Add-to-Cart mutations with instant payment gateway handoffs.
 
+> نکته‌ی ساختاری: این مخزن یک پروژه‌ی واحد است. `app.py` رابط Streamlit، `streamlit_app.py` ورودی استاندارد جایگزین و `sabad/` پکیج منطق کسب‌وکار است؛ پوشه‌ی دوم یا نسخه‌ی داپلیکیت از پروژه وجود ندارد.
+
 ---
 
 ## 📚 Spec-Oriented Development (SOD) — Single Source of Truth
@@ -129,6 +131,21 @@ Launch the interactive web UI with full Persian RTL typography:
 streamlit run app.py
 ```
 Open your browser at `http://localhost:8501`.
+
+### تجربه‌ی جدید کاربر
+
+- کاربر می‌تواند فهرست خرید را با متن فارسی یا ضبط صدای کوتاه وارد کند. تبدیل صدا به متن با Gemini اختیاری است و در صورت نبودن کلید، ورود متنی همچنان کار می‌کند.
+- نتیجه‌ها بر اساس قیمت کالا، تخفیف واقعی، موجودی، حداقل مبلغ سفارش و هزینه‌ی ارسال مقایسه می‌شوند؛ «سبد ترکیبی» فقط وقتی پیشنهاد می‌شود که جریمه‌ی ارسال‌های جداگانه را هم پوشش دهد.
+- جست‌وجوی کالا برای هر فروشگاه با نام اصلی، عبارت خام کاربر و در صورت نیاز عبارت‌های جایگزین (مثل «پاستا» برای «ماکارونی») انجام می‌شود. اگر حجم یا وزن گفته نشده باشد، فروشگاه به‌خاطر تفاوت اندازه‌ی بسته حذف نمی‌شود؛ جزئیات عبارت‌ها، تعداد نتایج خام و دلیل رد هر نتیجه در گزارش همان فروشگاه قابل مشاهده است.
+- ورود حساب از OIDC پشتیبانی می‌شود و نشست فروشگاه‌ها در فضای هر کاربر Streamlit نگه‌داری می‌شود تا بین کاربران نشت نکند.
+
+### ورود امن در محیط عمومی
+
+فایل نمونه‌ی `.streamlit/secrets.example.toml` را به `.streamlit/secrets.toml` کپی کنید و مقادیر OIDC را تنظیم کنید. برای Google، `server_metadata_url` همان آدرس نمونه است و `redirect_uri` باید با دامنه‌ی واقعی برابر باشد و به `/oauth2callback` ختم شود. فایل secrets در git نادیده گرفته شده است. در Vercel همین مقادیر را با نام‌های `OIDC_REDIRECT_URI`، `OIDC_COOKIE_SECRET`، `OIDC_CLIENT_ID`، `OIDC_CLIENT_SECRET` و `OIDC_SERVER_METADATA_URL` ثبت کنید؛ wrapper آن‌ها را بدون نوشتن روی دیسک به Streamlit می‌دهد.
+
+### استقرار
+
+برای اجرای پایدار Streamlit، **Streamlit Community Cloud، Railway، Render یا Fly.io** انتخاب مناسب‌تری هستند چون اتصال WebSocket را نگه می‌دارند. این مخزن یک wrapper رسمی `asgi_app.py` و یک handler در `api/index.py` دارد و `vercel.json` را برای استقرار Vercel آماده می‌کند؛ اگر Vercel برای پلن شما WebSocket طولانی را محدود کند، همان image را روی یکی از سرویس‌های بالا اجرا کنید و دامنه را به آن متصل کنید. در هر دو حالت، `GEMINI_API_KEY`، `GEMINI_MODEL` و مقادیر `[auth]` را فقط به‌صورت secret محیطی تنظیم کنید.
 
 ### Key UI Features:
 1. **Connection Status Indicators:** Real-time session status for SnappMarket, Digikala Jet, and Okala.

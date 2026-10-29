@@ -3,13 +3,30 @@ Abstract Base Class for Live Store Platform Adapters.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any, List, Optional
 from sabad.models.catalog import StoreItem, StoreInfo
 from sabad.models.dispatch import CartItemMutation, CartMutationResult
+
+_TIMEOUT_ERRORS = {
+    "TimeoutException",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "TimeoutError",
+}
 
 
 class BaseStoreAdapter(ABC):
     """Unified interface for SnappMarket, Digikala Jet, and Okala."""
+
+    def note_store_error(self, action: str, exc: BaseException, *, reraise_timeout: bool = False) -> None:
+        """Log a store failure. Search timeouts propagate so the harvester can explain them."""
+        from sabad.security import log_store_failure
+
+        log_store_failure(self.platform_name, action, exc)
+        if reraise_timeout and exc.__class__.__name__ in _TIMEOUT_ERRORS:
+            raise exc
 
     @staticmethod
     def rials_to_tomans(rials: Optional[float], fallback: float = 0.0) -> float:
@@ -21,6 +38,31 @@ class BaseStoreAdapter(ABC):
             return round(val / 10.0, 1) if val > 0 else fallback
         except (ValueError, TypeError):
             return fallback
+
+    @staticmethod
+    def first_url(value: Any) -> str:
+        """Extract the first usable HTTP URL from API-specific media shapes.
+
+        Retailer APIs are inconsistent: an image may be a URL string, a list
+        of ``{main, thumb}`` objects, or a nested object.  Normalising it here
+        prevents one malformed media field from aborting the rest of a search
+        response and guarantees ``StoreItem.image_url`` remains a string.
+        """
+        if isinstance(value, str):
+            value = value.strip()
+            return value if value.startswith(("http://", "https://")) else ""
+        if isinstance(value, dict):
+            for key in ("url", "imageUrl", "image_url", "main", "original", "thumb", "src", "link"):
+                candidate = BaseStoreAdapter.first_url(value.get(key))
+                if candidate:
+                    return candidate
+            return ""
+        if isinstance(value, (list, tuple)):
+            for candidate in value:
+                url = BaseStoreAdapter.first_url(candidate)
+                if url:
+                    return url
+        return ""
     
     @property
     @abstractmethod

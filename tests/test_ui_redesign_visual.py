@@ -168,15 +168,14 @@ def test_apptest_renders_visual_product_grid_with_images():
     at.run(timeout=30)
     assert len(at.exception) == 0
 
-    # Verify visual grid exists in rendered markdown
-    markdown_html = "\n".join(m.value for m in at.markdown)
-    assert "jet-product-grid" in markdown_html, "Visual product grid must be rendered"
-    assert "jet-product-card" in markdown_html, "Visual product cards must be rendered"
-    assert "شیر پرچرب کاله ۱ لیتری" in markdown_html
-    assert "مایع ظرفشویی پریل ۴ لیتری" in markdown_html
-    assert "<img" in markdown_html, "Product images (<img tags) must be rendered"
-    assert "jet-navbar" in markdown_html, "Digikala Jet navbar must be rendered"
-    assert "jet-stepper" in markdown_html, "Beginner onboarding stepper must be rendered"
+    # Product cards use native Streamlit elements, including real links, so
+    # raw HTML fragments can never leak into the shopper view.
+    markdown_text = "\n".join(m.value for m in at.markdown)
+    assert len(at.image) >= 2, "Product images must be rendered"
+    assert "شیر پرچرب کاله ۱ لیتری" in markdown_text
+    assert "مایع ظرفشویی پریل ۴ لیتری" in markdown_text
+    assert len(at.get("link_button")) >= 2, "Each product card must expose a clickable product link"
+    assert all("class=\"jet-card" not in text for text in markdown_text.splitlines())
 
 
 def test_render_selected_cart_card_html():
@@ -211,18 +210,19 @@ def test_image_resolution_expanded_staple_categories():
         assert fallback_uri.startswith("data:image/svg+xml;utf8,"), f"Fallback for {title} must be valid data URI"
 
 
-def test_apptest_renders_selected_cart_cards_with_images():
-    """Verify AppTest renders visual product cards with images for selected items before optimization."""
+def test_apptest_renders_compact_basket_review():
+    """After input, show an editable list and parsed items without the old showcase."""
     at = AppTest.from_file(str(BASE_DIR / "app.py"))
     at.session_state["user_basket_text"] = "دو تا شیر پرچرب کاله یک لیتری، یه مایع ظرفشویی پریل ۴ لیتری"
     at.run(timeout=30)
     assert len(at.exception) == 0
 
     markdown_html = "\n".join(m.value for m in at.markdown)
-    assert "jet-cart-item-card" in markdown_html, "Visual cart item card must be rendered in selected basket view"
-    assert "<img" in markdown_html, "Product images must be rendered in selected basket view"
+    assert len(at.text_area) == 1
+    assert len([b for b in at.button if b.key and b.key.startswith("del_cart_item_")]) == 2
     assert "شیر پرچرب کاله" in markdown_html or "شیر" in markdown_html
-    assert "ویترین تصویری کالاهای انتخابی شما" in markdown_html
+    assert "ویترین تصویری کالاهای انتخابی شما" not in markdown_html
+    assert at.button(key="compare_basket")
 
 
 def test_shelf_category_filtering():
@@ -239,7 +239,7 @@ def test_cart_item_deletion_conjunction_and_clear():
     at.run(timeout=30)
     assert len(at.exception) == 0
 
-    del_buttons = [b for b in at.button if "🗑️ حذف" in b.label]
+    del_buttons = [b for b in at.button if b.key and b.key.startswith("del_cart_item_")]
     assert len(del_buttons) == 2, f"Expected 2 delete buttons for 2 items, got {len(del_buttons)}"
 
     # Click delete on second item (تخم مرغ)

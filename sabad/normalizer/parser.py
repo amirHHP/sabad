@@ -37,6 +37,12 @@ KNOWN_PRODUCTS = [
     ("مایع لباسشویی", "شوینده"),
     ("پودر لباسشویی", "شوینده"),
     ("مایع سفید کننده", "شوینده"),
+    ("شامپو", "بهداشتی"),
+    ("حوله", "بهداشتی"),
+    ("واکس", "بهداشتی"),
+    ("تخم مرغ", "پروتئینی"),
+    ("پتی بور", "تنقلات"),
+    ("پودر کاکائو", "خواربار"),
     ("جرم گیر", "شوینده"),
     ("نرم کننده حوله و لباس", "شوینده"),
     ("اسکاچ", "شوینده"),
@@ -44,8 +50,6 @@ KNOWN_PRODUCTS = [
     ("دستمال کاغذی", "سلولزی"),
     ("دستمال حوله", "سلولزی"),
     ("دستمال", "سلولزی"),
-    ("پتی بور", "تنقلات"),
-    ("پودر کاکائو", "خواربار"),
     ("شیر", "لبنیات"),
     ("ماست", "لبنیات"),
     ("پنیر ماسکارپونه", "لبنیات"),
@@ -54,7 +58,6 @@ KNOWN_PRODUCTS = [
     ("کره", "لبنیات"),
     ("دوغ", "لبنیات"),
     ("کشک", "لبنیات"),
-    ("تخم مرغ", "پروتئینی"),
     ("روغن سرخ کردنی", "خواربار"),
     ("روغن پخت و پز", "خواربار"),
     ("روغن مایع", "خواربار"),
@@ -65,6 +68,7 @@ KNOWN_PRODUCTS = [
     ("کنسرو ماهی تن", "کنسرو"),
     ("تن ماهی", "کنسرو"),
     ("ماکارونی", "خواربار"),
+    ("پاستا", "خواربار"),
     ("رشته سوپ", "خواربار"),
     ("برنج", "خواربار"),
     ("شکر", "خواربار"),
@@ -238,19 +242,49 @@ def _contains_product(text: str, name: str) -> bool:
 
 
 _LIST_FILLERS = {"خوب", "خب", "آره", "بله", "من", "لطفا", "بعد", "بعدش", "حالا", "دیگه", "هم"}
+_DISCOURSE = {"دلم", "همین", "فقط", "باشه", "تمام", "تموم"}
+# «دلم می‌خوام ترامیسو درست کنم» is intent, not a grocery item.
+_NARRATIVE_RE = re.compile(r"درست\s*کنم|درست\s*کنیم|درست\s*کردن|بپزم|بپزیم")
 # Voice notes often list items as «پتی بور میخوام شیر میخوام …» with no comma or «و».
+# The verb may sit against a period: «ماسکارپونه می‌خوام.»
 _REQUEST_SPLIT_RE = re.compile(
-    r"(?:^|\s+)(?:می\s*خوام(?:ش)?(?:\s+که)?|می\s*خواستم|لازم\s*دارم)(?:\s+|$)"
+    r"(?:^|\s+)(?:می\s*خوام(?:ش)?(?:\s+که)?|می\s*خواستم|لازم\s*دارم)(?:[\s.!?؟…]+|$)"
 )
 
 
 def _strip_list_fillers(text: str) -> str:
-    words = text.replace("،", " ").split()
+    words = text.replace("،", " ").replace(".", " ").split()
     while words and (words[0] in _LIST_FILLERS or words[0] == "و"):
         words.pop(0)
     while words and words[-1] in _LIST_FILLERS:
         words.pop()
-    return " ".join(words).strip()
+    return " ".join(words).strip(" .!؟?…،,")
+
+
+def _is_narrative(text: str) -> bool:
+    """Drop desire clauses and closers such as «دلم می‌خوام درست کنم» or «همین دیگه»."""
+    folded = fold_grocery_aliases(text)
+    words = [word for word in folded.split() if word not in _LIST_FILLERS and word != "و"]
+    if not words or all(word in _DISCOURSE for word in words):
+        return True
+    has_product = any(_contains_product(folded, name) for name, _ in KNOWN_PRODUCTS)
+    return bool(_NARRATIVE_RE.search(folded)) and not has_product
+
+
+def _prefer_specific_name(name: str, raw_text: str) -> str:
+    """Keep «پنیر ماسکارپونه» when a parser shortens it to «پنیر»."""
+    folded_raw = fold_grocery_aliases(raw_text)
+    folded_name = fold_grocery_aliases(name)
+    present = [prod for prod, _ in KNOWN_PRODUCTS if _contains_product(folded_raw, prod)]
+    longer = [
+        prod for prod in present
+        if folded_name and folded_name != prod and folded_name in prod
+    ]
+    if longer:
+        return max(longer, key=len)
+    if folded_name in present:
+        return folded_name
+    return name
 
 
 def _split_on_requests(chunk: str) -> List[str]:
@@ -289,6 +323,10 @@ def parse_single_item(raw_phrase: str) -> ParsedGroceryItem:
     
     # Priority 5: Extract product name & category
     prod_name, cat = extract_product_and_category(cleaned)
+    specific_name = _prefer_specific_name(prod_name, raw_phrase)
+    if specific_name != prod_name:
+        prod_name = specific_name
+        cat = next((category for product, category in KNOWN_PRODUCTS if product == prod_name), cat)
 
     return ParsedGroceryItem(
         raw_text=raw_phrase.strip(),
@@ -312,21 +350,27 @@ def parse_grocery_input_rule_based(raw_input: str) -> ParsedGroceryBasket:
         return ParsedGroceryBasket(raw_input="", items=[], engine="rule_based")
 
     cleaned_input = fold_grocery_aliases(raw_input)
-    phrases = re.split(r'[,،\n;؛]+', cleaned_input)
+    phrases = re.split(r'[,،\n;؛.!?؟…]+', cleaned_input)
     
     items: List[ParsedGroceryItem] = []
-    product_starts = sorted((name for name, _ in KNOWN_PRODUCTS), key=len, reverse=True)
+    product_starts = sorted(
+        {name for name, _ in KNOWN_PRODUCTS} | {"شامپو", "تخم مرغ", "ماکارونی", "پاستا"},
+        key=len,
+        reverse=True,
+    )
     next_item = r"(?:یک|دو|سه|چهار|پنج|یه|\d+)\s+|" + "|".join(re.escape(p) for p in product_starts)
     for chunk in phrases:
         chunk = chunk.strip()
         if not chunk:
             continue
 
-        # «میخوام» separates dictated items. «و» still separates items even
-        # when the next one has no quantity.
+        # «میخوام» is the separator in dictated lists. Conjunctions still
+        # separate items when the next item has no quantity:
+        # «شامپو و تخم مرغ و ماکارونی» must become three searches, not one
+        # fuzzy query named «شامپو و تخم».
         for requested in _split_on_requests(chunk):
             requested = _strip_list_fillers(requested)
-            if not requested:
+            if not requested or _is_narrative(requested):
                 continue
             sub_chunks = re.split(rf"\s+و\s+(?=(?:{next_item}))", requested)
             for sub in sub_chunks:
@@ -335,6 +379,49 @@ def parse_grocery_input_rule_based(raw_input: str) -> ParsedGroceryBasket:
                     items.append(parse_single_item(sub))
 
     return ParsedGroceryBasket(raw_input=raw_input, items=items, engine="rule_based")
+
+
+def _gemini_output_needs_repair(raw_input: str, gemini_basket: ParsedGroceryBasket) -> bool:
+    """Reject semantically unsafe LLM output before it reaches catalog search.
+
+    The LLM occasionally merges conjunctions (for example ``شامپو و واکس``)
+    or turns a short generic word into a specific accessory (``حوله`` →
+    ``مچ‌بند حوله‌ای``).  The deterministic parser is the source of truth for
+    item boundaries and everyday defaults in these cases.
+    """
+    rule_basket = parse_grocery_input_rule_based(raw_input)
+    if not rule_basket.items or len(gemini_basket.items) != len(rule_basket.items):
+        return bool(rule_basket.items)
+
+    raw_clean = clean_persian_text(raw_input)
+    forbidden_specifics = ("خودرو", "ماشین", "کارواش", "مچ بند", "مچگیر", "مچ گیر", "هدبند")
+    for item in gemini_basket.items:
+        name_clean = clean_persian_text(item.name)
+        raw_item_clean = clean_persian_text(item.raw_text)
+        # Do not let the model invent a vehicle/fitness/accessory variant when
+        # the user only named the everyday grocery item.
+        if any(term in name_clean for term in forbidden_specifics) and not any(
+            term in raw_clean for term in forbidden_specifics
+        ):
+            return True
+        if item.name.strip() in {"شامپو خودرو", "شامپو ماشین", "حوله مچی", "مچ بند حوله ای"}:
+            return True
+        # A generic request must remain generic even when the model echoes a
+        # catalog title as the canonical name.
+        if "شامپو" in raw_item_clean and "شامپو" not in name_clean:
+            return True
+        if "حوله" in raw_item_clean and "حوله" not in name_clean:
+            return True
+
+    # Ensure every deterministic core noun is represented in the model output
+    # (order may differ, but a noun cannot disappear into a compound phrase).
+    precise_names = {"شامپو", "حوله", "واکس", "پتی بور", "پنیر ماسکارپونه", "پودر کاکائو"}
+    gemini_names = [clean_persian_text(item.name) for item in gemini_basket.items]
+    for rule_item in rule_basket.items:
+        rule_name = clean_persian_text(rule_item.name)
+        if rule_name in precise_names and not any(rule_name in name for name in gemini_names):
+            return True
+    return False
 
 
 def parse_grocery_input(
@@ -368,7 +455,16 @@ def parse_grocery_input(
                 from sabad.normalizer.gemini_parser import parse_grocery_input_gemini
                 gemini_basket = parse_grocery_input_gemini(raw_input, api_key=gemini_key)
                 if gemini_basket and gemini_basket.items:
-                    return gemini_basket
+                    for item in gemini_basket.items:
+                        specific_name = _prefer_specific_name(item.name, item.raw_text or raw_input)
+                        if specific_name != item.name:
+                            item.name = specific_name
+                            item.category = next(
+                                (category for product, category in KNOWN_PRODUCTS if product == specific_name),
+                                item.category,
+                            )
+                    if not _gemini_output_needs_repair(raw_input, gemini_basket):
+                        return gemini_basket
             except Exception:
                 pass
 

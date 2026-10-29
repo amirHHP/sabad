@@ -143,6 +143,38 @@ class TestDigikalaJetAdapterUnit:
             assert deal.is_in_stock is True
 
     @pytest.mark.asyncio
+    async def test_search_normalizes_gallery_media_without_dropping_products(self, adapter):
+        payload = {
+            "data": {
+                "result": [
+                    {
+                        "id": 901,
+                        "title": "شامپو مو ۴۰۰ میلی‌لیتری",
+                        "shop": {"id": "193117851239"},
+                        "price": {"price": 1200000, "discount": 100000, "discount_percentage": 8.3},
+                        "stock": {"has_stock": True},
+                        "media": [{"main": "https://cdn.example/shampoo.jpg"}],
+                        "url": {"url": "https://www.digikalajet.com/product/901"},
+                    },
+                    {
+                        "id": 902,
+                        "title": "حوله دستی کوچک",
+                        "price": {"price": 800000, "discount": 0},
+                        "stock": {"has_stock": True},
+                        "media": [{"thumb": "https://cdn.example/towel.jpg"}],
+                    },
+                ]
+            }
+        }
+        with patch.object(adapter.client, "get", new=AsyncMock(return_value=httpx.Response(200, json=payload))):
+            items = await adapter.search("شامپو", 35.7, 51.4)
+
+        assert [item.product_id for item in items] == ["901", "902"]
+        assert items[0].image_url == "https://cdn.example/shampoo.jpg"
+        assert items[0].product_url == "https://www.digikalajet.com/shop/product/193117851239/901/"
+        assert items[1].image_url == "https://cdn.example/towel.jpg"
+
+    @pytest.mark.asyncio
     async def test_add_to_cart_without_auth(self, adapter):
         with patch("sabad.adapters.session_manager.SessionManager.get_token", return_value=None):
             mutation = CartItemMutation(product_id="123", quantity=2, store_id="jet")
@@ -245,6 +277,19 @@ class TestTapsiMarketAdapterUnit:
                         "vendorStatus": "Open",
                         "deliveryPrice": 30000.0
                     }
+                },
+                {
+                    "id": "restaurant_item",
+                    "productInfo": {
+                        "name": "ماکارونی پخته ویژه",
+                        "price": 250000.0,
+                        "priceAfterDiscount": 250000.0,
+                    },
+                    "vendorInfo": {
+                        "vendorCode": "restaurant_vendor",
+                        "title": "رستوران ایتالیایی",
+                        "vendorStatus": "Open",
+                    }
                 }
             ]
         }
@@ -260,6 +305,46 @@ class TestTapsiMarketAdapterUnit:
             assert item.discount_price == 34200.0
             assert item.discount_percent == 10.0
             assert item.is_in_stock is True
+
+    @pytest.mark.asyncio
+    async def test_search_keeps_market_results_when_discovery_codes_differ(self, adapter):
+        adapter._cached_store_id = "nearby_branch"
+        payload = {
+            "data": [
+                {
+                    "id": "market_item",
+                    "productInfo": {
+                        "name": "حوله دستی کوچک",
+                        "price": 100000.0,
+                        "priceAfterDiscount": 90000.0,
+                    },
+                    "vendorInfo": {
+                        "vendorCode": "another_market_branch",
+                        "title": "سوپرمارکت محلی",
+                        "vendorType": "market",
+                        "vendorStatus": "Open",
+                    },
+                },
+                {
+                    "id": "restaurant_item",
+                    "productInfo": {
+                        "name": "واکس و شامپو خودرو",
+                        "price": 100000.0,
+                        "priceAfterDiscount": 100000.0,
+                    },
+                    "vendorInfo": {
+                        "vendorCode": "food_branch",
+                        "title": "رستوران نمونه",
+                        "vendorType": "restaurant",
+                        "vendorStatus": "Open",
+                    },
+                },
+            ]
+        }
+        with patch.object(adapter.client, "get", new=AsyncMock(return_value=httpx.Response(200, json=payload))):
+            items = await adapter.search("حوله", 35.7, 51.4)
+
+        assert [item.product_id for item in items] == ["market_item"]
 
     @pytest.mark.asyncio
     async def test_add_to_cart_without_auth(self, adapter):

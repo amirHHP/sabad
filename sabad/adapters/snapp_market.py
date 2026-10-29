@@ -71,7 +71,7 @@ class SnappMarketAdapter(BaseStoreAdapter):
                         delivery_tiers=tiers
                     )
         except Exception as e:
-            print(f"Error fetching SnappMarket store info: {e}")
+            self.note_store_error("store_info", e)
 
         return StoreInfo(
             platform=self.platform_name,
@@ -120,10 +120,7 @@ class SnappMarketAdapter(BaseStoreAdapter):
                         pct = (discount_tomans / base_price_tomans * 100.0) if base_price_tomans > 0 else 0.0
                         is_flash = pct >= 25.0
 
-                        thumb = ""
-                        imgs = p.get("images", [])
-                        if imgs and isinstance(imgs, list):
-                            thumb = imgs[0].get("thumb") or imgs[0].get("main") or ""
+                        thumb = self.first_url(p.get("images") or p.get("image") or p.get("imageUrl"))
 
                         # Stock availability from real API field; guard against price <= 0 or missing prices
                         stock_val = p.get("stock")
@@ -146,10 +143,11 @@ class SnappMarketAdapter(BaseStoreAdapter):
                             discount_percent=round(pct, 1),
                             is_flash_deal=is_flash,
                             is_in_stock=is_in_stock,
-                            image_url=thumb
+                            image_url=thumb,
+                            product_url=self.first_url(p.get("url") or p.get("productUrl") or p.get("product_url") or p.get("webUrl") or p.get("link")),
                         ))
         except Exception as e:
-            print(f"Error searching SnappMarket: {e}")
+            self.note_store_error("search", e, reraise_timeout=True)
 
         return items
 

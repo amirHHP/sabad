@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -29,7 +29,13 @@ ENV/
 
 # Sessions & Secrets
 .sessions/
+.data/
 .env
+.streamlit/secrets.toml
+
+# Next.js
+web/node_modules/
+web/.next/
 
 # Testing & Cache
 .pytest_cache/
@@ -40,3 +46,4 @@ htmlcov/
 .DS_Store
 .vscode/
 .idea/
+.vercel

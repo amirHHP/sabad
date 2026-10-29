@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "id": "e6",
+      "productInfo": {
+        "id": "e6",
+        "name": "تخم مرغ ۶ عددی",
+        "price": 90000,
+        "priceAfterDiscount": 90000,
+        "discountRatio": 0.0,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "e20",
+      "productInfo": {
+        "id": "e20",
+        "name": "تخم مرغ ۲۰ عددی",
+        "price": 240000,
+        "priceAfterDiscount": 200000,
+        "discountRatio": 16.7,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    }
+  ]
+}

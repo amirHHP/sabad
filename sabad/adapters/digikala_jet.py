@@ -16,6 +16,7 @@ from sabad.config import (
 )
 from sabad.models.catalog import StoreItem, StoreInfo, DeliveryTier
 from sabad.models.dispatch import CartItemMutation, CartMutationResult
+from sabad.product_links import digikala_jet_product_page
 
 
 class DigikalaJetAdapter(BaseStoreAdapter):
@@ -35,6 +36,14 @@ class DigikalaJetAdapter(BaseStoreAdapter):
 
     def is_authenticated(self) -> bool:
         return SessionManager.is_authenticated(self.platform_name)
+
+    def _product_page(self, row: Dict[str, Any], shop_id: str, product_id: str) -> Optional[str]:
+        """Link to the public product page, not a title search that 404s."""
+        page = digikala_jet_product_page(shop_id, product_id)
+        if page:
+            return page
+        found = self.first_url(row.get("url") or row.get("product_url") or row.get("web_url") or row.get("link"))
+        return found or None
 
     async def get_store_info(self, lat: float, lng: float) -> Optional[StoreInfo]:
         """Resolves serving dark store or supermarket branch, live delivery fee, and MOV."""
@@ -76,7 +85,7 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                         delivery_tiers=tiers
                     )
         except Exception as e:
-            print(f"Error fetching Jet store info: {e}")
+            self.note_store_error("store_info", e)
 
         return StoreInfo(
             platform=self.platform_name,
@@ -100,7 +109,14 @@ class DigikalaJetAdapter(BaseStoreAdapter):
             resp = await self.client.get(url)
             if resp.status_code == 200:
                 payload = resp.json()
-                results = payload.get("data", {}).get("result", [])
+                data = payload.get("data", {})
+                results = data.get("result", []) if isinstance(data, dict) else []
+                if isinstance(results, dict):
+                    results = results.get("products") or results.get("items") or results.get("results") or []
+                if not results and isinstance(data, dict):
+                    results = data.get("products") or data.get("items") or []
+                if not isinstance(results, list):
+                    results = []
                 
                 for r in results:
                     stock_obj = r.get("stock")
@@ -138,10 +154,12 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                     else:
                         is_in_stock = True
 
-                    shop_id = str(r.get("shop_id") or r.get("shop", {}).get("id") or "jet_default")
-                    product_id = str(r.get("id") or r.get("product_id"))
+                    shop = r.get("shop") if isinstance(r.get("shop"), dict) else {}
+                    shop_id = str(r.get("shop_id") or shop.get("id") or "jet_default")
+                    # Page URLs use `id` (shop product). `product_id` is a different barcode.
+                    product_id = str(r.get("id") or "")
                     
-                    media = r.get("media") or ""
+                    media = self.first_url(r.get("media") or r.get("images") or r.get("image"))
                     is_flash = pct >= 20.0 or bool(r.get("is_dynamic_amazing"))
 
                     items.append(StoreItem(
@@ -155,10 +173,11 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                         discount_percent=round(pct, 1),
                         is_flash_deal=is_flash,
                         is_in_stock=is_in_stock,
-                        image_url=media
+                        image_url=media,
+                        product_url=self._product_page(r, shop_id, product_id),
                     ))
         except Exception as e:
-            print(f"Error searching Digikala Jet: {e}")
+            self.note_store_error("search", e, reraise_timeout=True)
 
         # Prioritize in-stock items first while maintaining relevance order
         items.sort(key=lambda x: not x.is_in_stock)
@@ -209,6 +228,8 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                                     sell_t = max(1.0, base_t - disc_t) if base_t > 0 else 0.0
                                     in_stock = has_stock and (price_info is not None) and (base_t > 0)
 
+                                    shop = p.get("shop") if isinstance(p.get("shop"), dict) else {}
+                                    shop_id = str(p.get("shop_id") or shop.get("id") or "")
                                     deals.append(StoreItem(
                                         platform=self.platform_name,
                                         store_id="jet_amazing",
@@ -220,11 +241,12 @@ class DigikalaJetAdapter(BaseStoreAdapter):
                                         discount_percent=round(pct, 1),
                                         is_flash_deal=True,
                                         is_in_stock=in_stock,
-                                        image_url=p.get("media") or ""
+                                        image_url=self.first_url(p.get("media") or p.get("images") or p.get("image")),
+                                        product_url=self._product_page(p, shop_id, str(p.get("id") or "")),
                                     ))
                                 break
         except Exception as e:
-            print(f"Error fetching Digikala Jet flash deals: {e}")
+            self.note_store_error("flash_deals", e)
 
         return deals
 

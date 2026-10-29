@@ -33,9 +33,10 @@ def test_app_boots_headlessly():
     assert len(at.exception) == 0, f"app.py crashed with exceptions: {at.exception}"
     
     # Assert primary UI elements rendered
-    assert len(at.text_area) >= 1, "Persian grocery text area must be present"
-    assert len(at.button) >= 1, "Action buttons must be present"
-    assert len(at.selectbox) >= 1, "Location selector in sidebar must be present"
+    assert len(at.get("audio_input")) == 1
+    assert [button.key for button in at.button] == ["open_settings"]
+    assert not at.text_area and not at.selectbox and not at.sidebar.children
+    assert at.session_state["user_basket_text"] == ""
 
 
 def test_streamlit_app_alias_boots_headlessly():
@@ -43,7 +44,8 @@ def test_streamlit_app_alias_boots_headlessly():
     at = AppTest.from_file(str(BASE_DIR / "streamlit_app.py"))
     at.run(timeout=30)
     assert len(at.exception) == 0, f"streamlit_app.py crashed with exceptions: {at.exception}"
-    assert len(at.text_area) >= 1, "App elements should be loaded via alias entrypoint"
+    assert len(at.get("audio_input")) == 1
+    assert at.button(key="open_settings").label == "تنظیمات"
 
 
 def test_streamlit_config_toml():
@@ -343,11 +345,8 @@ def test_calculation_breakdown_rendering_with_mock_session_state(mock_calculatio
     at.run(timeout=30)
     assert len(at.exception) == 0, f"app.py crashed: {at.exception}"
 
-    # Verify Section 4 subheader
-    subheaders = [s.value for s in at.subheader]
-    assert any("روند محاسبات و جزئیات اقلام" in s for s in subheaders), (
-        f"Itemized calculation breakdown subheader missing from: {subheaders}"
-    )
+    # The technical audit is intentionally collapsed; nested audit widgets are
+    # still registered by AppTest and are checked below.
 
     # Verify 4 tabs are present with exact expected labels
     tab_labels = [tab.label for tab in at.tabs]
@@ -416,14 +415,14 @@ def test_calculation_breakdown_optimal_final_basket_tab(mock_calculation_data):
     at.run(timeout=30)
     assert len(at.exception) == 0
 
-    # Verify mathematical formula (LaTeX is rendered)
-    assert len(at.latex) >= 1, "Mathematical breakdown formula in LaTeX must be rendered"
+    # Technical MILP formulas are intentionally omitted from the shopper view.
+    assert len(at.latex) == 0, "Technical optimization formulas must stay out of the shopper view"
 
     # Verify winning SKU table columns
     expected_optimal_cols = {
         "قلم درخواستی",
         "فروشگاه برنده",
-        "کالای برگزیده (SKU)",
+        "کالا",
         "قیمت واحد (تومان)",
         "تعداد",
         "مجموع ردیف (تومان)",
@@ -439,7 +438,7 @@ def test_calculation_breakdown_optimal_final_basket_tab(mock_calculation_data):
 
     # Verify store split cards
     markdown_texts = [m.value for m in at.markdown]
-    assert any("کارت‌های تفکیک سفارش" in t for t in markdown_texts), (
+    assert any("جمع سفارش‌ها" in t for t in markdown_texts), (
         "Store split cards section must be rendered"
     )
 

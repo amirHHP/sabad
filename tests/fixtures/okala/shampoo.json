@@ -1,0 +1,40 @@
+{
+  "entities": [
+    {
+      "id": "s200",
+      "name": "شامپو سر ۲۰۰ میلی‌لیتری",
+      "price": 900000,
+      "okPrice": 900000,
+      "discountPercent": 0.0,
+      "quantity": 6,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "s400",
+      "name": "شامپو سر ۴۰۰ میلی‌لیتری",
+      "price": 1400000,
+      "okPrice": 1400000,
+      "discountPercent": 0.0,
+      "quantity": 4,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "s1000",
+      "name": "شامپو سر ۱۰۰۰ میلی‌لیتری",
+      "price": 2800000,
+      "okPrice": 2400000,
+      "discountPercent": 14.3,
+      "quantity": 3,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "body",
+      "name": "شامپو بدن گیاهی",
+      "price": 700000,
+      "okPrice": 700000,
+      "discountPercent": 0.0,
+      "quantity": 5,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    }
+  ]
+}

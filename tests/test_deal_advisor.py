@@ -407,9 +407,8 @@ def test_ui_renders_flash_deal_opportunities(sample_stores):
     assert len(at.exception) == 0
 
     markdown_all = " ".join(m.value for m in at.markdown)
-    assert "تخفیف‌های شگفت‌انگیز" in markdown_all
-    assert "پیشنهادهای شگفت‌انگیز از همین فروشگاه" in markdown_all
-    assert "فرصت‌های طلایی تغییر فروشگاه" in markdown_all
+    assert "کنسرو تن ماهی" in markdown_all
+    assert "بن‌مانو" in markdown_all
 
     # Find the add-on opportunity button
     btn_addon = None

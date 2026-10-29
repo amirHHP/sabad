@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "id": "hand",
+      "productInfo": {
+        "id": "hand",
+        "name": "حوله دستی کوچک",
+        "price": 180000,
+        "priceAfterDiscount": 150000,
+        "discountRatio": 16.7,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": false
+      }
+    },
+    {
+      "id": "sport",
+      "productInfo": {
+        "id": "sport",
+        "name": "حوله ورزشی",
+        "price": 220000,
+        "priceAfterDiscount": 200000,
+        "discountRatio": 9.1,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "bath",
+      "productInfo": {
+        "id": "bath",
+        "name": "حوله حمام بزرگ",
+        "price": 450000,
+        "priceAfterDiscount": 390000,
+        "discountRatio": 13.3,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "mop",
+      "productInfo": {
+        "id": "mop",
+        "name": "تی حوله‌ای میکروفایبر",
+        "price": 90000,
+        "priceAfterDiscount": 80000,
+        "discountRatio": 11.1,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    }
+  ]
+}

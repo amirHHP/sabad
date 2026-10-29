@@ -159,7 +159,7 @@ def is_flavor_compatible(req_name: str, title: str) -> bool:
     return True
 
 
-def is_product_type_compatible(req_name: str, title: str) -> bool:
+def is_product_type_compatible(req_name: str, title: str, request_text: Optional[str] = None) -> bool:
     """Verifies core product type (e.g. dishwashing liquid vs hand soap vs laundry detergent, and toilet paper vs facial tissue)."""
     if not req_name or not title:
         return True
@@ -169,8 +169,10 @@ def is_product_type_compatible(req_name: str, title: str) -> bool:
     folded_name = fold_grocery_aliases(req_name)
     folded_title = fold_grocery_aliases(title)
 
-    # Petit beurre, mascarpone, and cocoa powder are easy to collapse into a
-    # nearby grocery item: any biscuit, plain cheese, or chocolate milk.
+    # These dictated names are easy to collapse into a nearby grocery item:
+    # petit beurre into any biscuit, mascarpone into plain cheese, cocoa
+    # powder into chocolate milk. Guard the canonical name, not the whole
+    # utterance, so a neighboring item in the same voice note cannot veto this one.
     if "پتی بور" in folded_name and "پتی بور" not in folded_title:
         return False
     if "ماسکارپونه" in folded_name and "ماسکارپونه" not in folded_title:
@@ -192,6 +194,50 @@ def is_product_type_compatible(req_name: str, title: str) -> bool:
         if any(w in cand_clean for w in ["ظرفشویی", "دستشویی"]):
             return False
         if "لباسشویی" not in cand_clean:
+            return False
+
+    request_clean = clean_persian_text(request_text or req_name)
+
+    # A bare «شامپو» means hair/scalp shampoo in the everyday shopping
+    # context. Body wash, carpet shampoo, and animal shampoo are different
+    # product families and should not win by merely sharing the word shampoo.
+    shampoo_is_generic = req_clean.strip() == "شامپو" and not any(
+        word in request_clean for word in ["بدن", "فرش", "سگ", "گربه"]
+    )
+    if shampoo_is_generic:
+        if any(w in cand_clean for w in [
+            "شامپو بدن", "بدن شوی", "بدن‌شوی", "شامپو فرش", "فرش", "سگ", "گربه",
+            "خودرو", "ماشین", "کارواش", "واکس", "car shampoo", "car wash",
+        ]):
+            return False
+
+    # A bare «واکس» is the everyday shoe-care item.  Vehicle wax and car-wash
+    # products often rank highly for this short query, so keep that category
+    # out unless the user explicitly said خودرو/ماشین/کارواش.
+    wax_is_generic = req_clean.strip() == "واکس" and not any(
+        word in request_clean for word in ["خودرو", "ماشین", "کارواش", "کفش", "مو"]
+    )
+    if wax_is_generic and (
+        any(w in cand_clean for w in [
+            "واکس خودرو", "واکس ماشین", "پولیش", "کارواش", "car wax", "car polish",
+        ])
+        or ("واکس" in cand_clean and any(w in cand_clean for w in ["خودرو", "ماشین"]))
+    ):
+        return False
+
+    # A bare «حوله» means a small hand towel. Exclude cleaning/mop cloths and
+    # oversized bath/pool towels; explicit phrases such as «حوله حمام» still
+    # remain searchable because the request name then differs from bare towel.
+    towel_is_generic = req_clean.strip() == "حوله" and not any(
+        word in request_clean for word in ["دستی", "حمام", "استخری", "استخر", "کوچک", "بزرگ"]
+    )
+    if towel_is_generic:
+        standalone_mop = re.search(r"(?:^|\s)تی(?:\s|$)", cand_clean)
+        if standalone_mop or any(w in cand_clean for w in [
+            "تی حوله", "زمین شوی", "زمین‌شوی", "میکروفایبر", "دستمال", "نظافت",
+            "حوله حمام", "حوله استخری", "حوله استخر", "بزرگ", "مچ بند", "مچ‌بند",
+            "مچگیر", "مچ گیر", "هدبند", "باند", "ورزشی", "پد",
+        ]):
             return False
 
     if "توالت" in req_clean:
@@ -287,58 +333,130 @@ def is_volume_compatible(req_vol: Optional[float], req_unit: Optional[str], titl
     return True
 
 
+def _score_candidate(query_item: ParsedGroceryItem, cand: StoreItem, query_full_text: str):
+    """Return ``(item, similarity)`` when the candidate survives the attribute guards."""
+    if not is_flavor_compatible(query_full_text, cand.title):
+        return None
+    if not is_product_type_compatible(query_item.name, cand.title, query_item.raw_text):
+        return None
+    if not is_fat_compatible(query_item.fat_percentage, cand.title):
+        return None
+    if not is_volume_compatible(query_item.volume_weight, query_item.unit, cand.title):
+        return None
+
+    target_str = fold_grocery_aliases(f"{query_item.name} {query_item.brand or ''}")
+    cand_str = fold_grocery_aliases(f"{cand.title} {cand.brand or ''}")
+    sim_score = fuzz.token_set_ratio(target_str, cand_str) / 100.0
+
+    if query_item.brand:
+        brand_in_cand = (query_item.brand in cand_str) or (cand.brand and query_item.brand in cand.brand)
+        if not brand_in_cand:
+            return None
+    if fold_grocery_aliases(query_item.name) not in cand_str:
+        sim_score *= 0.5
+    if sim_score < 0.50:
+        return None
+    return cand, sim_score
+
+
+def _match_rank(query_item: ParsedGroceryItem, item: StoreItem) -> tuple:
+    """Pack price when the shopper named a size; unit price when they did not."""
+    pack = item.discount_price if item.discount_price > 0 else float("inf")
+    if query_item.volume_weight is not None:
+        return (0, pack, 0.0)
+    from sabad.pricing import comparison_rank_key
+
+    return comparison_rank_key(item)
+
+
 def match_sku(query_item: ParsedGroceryItem, candidates: List[StoreItem]) -> Optional[StoreItem]:
     """
     Finds the best matching StoreItem among candidates for a given query item.
-    Enforces strict attribute filters (flavor, product type, fat, volume) and ranks by fuzzy similarity score.
+    Enforces strict attribute filters (flavor, product type, fat, volume).
+
+    When the request has no size, everyday packs are ranked by comparable unit
+    price so a 1000ml bottle can beat a 200ml bottle. Bulk packs stay behind
+    everyday packs. An out-of-stock compatible SKU is kept when every in-stock
+    result is a different product, so the UI can explain the gap.
     """
     if not candidates:
         return None
 
-    best_item: Optional[StoreItem] = None
-    best_score = 0.0
-
     query_full_text = f"{query_item.name} {query_item.raw_text}"
+    available = [cand for cand in candidates if cand.is_in_stock]
+    unavailable = [cand for cand in candidates if not cand.is_in_stock]
 
-    for cand in candidates:
-        # 1. Strict Attribute Verification: Flavor / Variant
-        if not is_flavor_compatible(query_full_text, cand.title):
-            continue
+    def collect(pool: List[StoreItem]):
+        found = []
+        for cand in pool:
+            pair = _score_candidate(query_item, cand, query_full_text)
+            if pair is not None:
+                found.append(pair)
+        return found
 
-        # 2. Strict Attribute Verification: Product Type (e.g. dishwashing vs hand soap)
-        if not is_product_type_compatible(query_item.name, cand.title):
-            continue
+    compatible_items = collect(available) or collect(unavailable)
+    if not compatible_items:
+        return None
 
-        # 3. Strict Attribute Verification: Fat content
-        if not is_fat_compatible(query_item.fat_percentage, cand.title):
-            continue
+    best_item, best_score = min(
+        compatible_items,
+        key=lambda pair: (
+            *_match_rank(query_item, pair[0]),
+            -pair[1],
+            pair[0].title,
+        ),
+    )
+    best_item.match_score = best_score
+    return best_item
 
-        # 4. Strict Attribute Verification: Volume / Weight
-        if not is_volume_compatible(query_item.volume_weight, query_item.unit, cand.title):
-            continue
 
-        # 5. Fuzzy Title Matching
-        target_str = fold_grocery_aliases(f"{query_item.name} {query_item.brand or ''}")
-        cand_str = fold_grocery_aliases(f"{cand.title} {cand.brand or ''}")
+def explain_sku_candidates(
+    query_item: ParsedGroceryItem,
+    candidates: List[StoreItem],
+) -> dict:
+    """Return auditable search evidence for the UI.
 
-        sim_score = fuzz.token_set_ratio(target_str, cand_str) / 100.0
+    Matching used to collapse every failure into «ناموجود / عدم تطابق». This
+    keeps the actual API result count and the first rejection reason so a user
+    can tell an empty branch response from a strict attribute mismatch.
+    """
+    compatible = []
+    rejected = []
+    for candidate in candidates:
+        reasons = []
+        query_full = f"{query_item.name} {query_item.raw_text}"
+        if not is_flavor_compatible(query_full, candidate.title):
+            reasons.append("طعم یا نوع محصول متفاوت")
+        if not is_product_type_compatible(query_item.name, candidate.title, query_item.raw_text):
+            reasons.append("نوع کالا متفاوت")
+        if not is_fat_compatible(query_item.fat_percentage, candidate.title):
+            reasons.append("درصد چربی متفاوت")
+        if not is_volume_compatible(query_item.volume_weight, query_item.unit, candidate.title):
+            reasons.append("حجم/وزن درخواستی متفاوت")
 
-        # 6. Brand Verification & Penalization
-        if query_item.brand:
-            brand_in_cand = (query_item.brand in cand_str) or (cand.brand and query_item.brand in cand.brand)
-            if not brand_in_cand:
-                sim_score *= 0.6
+        target = fold_grocery_aliases(f"{query_item.name} {query_item.brand or ''}")
+        actual = fold_grocery_aliases(f"{candidate.title} {candidate.brand or ''}")
+        score = fuzz.token_set_ratio(target, actual) / 100.0
+        if fold_grocery_aliases(query_item.name) not in actual:
+            reasons.append("نام پایه کالا در عنوان نتیجه نیست")
+        if score < 0.50:
+            reasons.append("شباهت نام کمتر از حد اطمینان")
 
-        # 7. Core product noun verification
-        if fold_grocery_aliases(query_item.name) not in cand_str:
-            sim_score *= 0.5
+        record = {
+            "title": candidate.title,
+            "in_stock": bool(candidate.is_in_stock),
+            "score": round(score, 2),
+            "reasons": reasons,
+        }
+        if reasons:
+            rejected.append(record)
+        else:
+            compatible.append(record)
 
-        if sim_score > best_score and sim_score >= 0.50:
-            best_score = sim_score
-            best_item = cand
-
-    if best_item:
-        best_item.match_score = best_score
-        return best_item
-
-    return None
+    return {
+        "candidate_count": len(candidates),
+        "candidate_titles": [c.title for c in candidates[:8]],
+        "compatible": compatible[:8],
+        "rejected": rejected[:8],
+        "rejected_count": len(rejected),
+    }

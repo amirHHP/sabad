@@ -1,0 +1,35 @@
+{
+  "data": {
+    "vendor_product_variations": {
+      "items": [
+        {
+          "id": 501,
+          "products": [
+            {
+              "id": "p500",
+              "title": "ماکارونی ۵۰۰ گرمی",
+              "brand": null,
+              "price": 45000,
+              "discount": 0,
+              "stock": 10,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "p700",
+              "title": "ماکارونی ۷۰۰ گرمی",
+              "brand": null,
+              "price": 62000,
+              "discount": 6000,
+              "stock": 9,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

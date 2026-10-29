@@ -27,9 +27,25 @@ def get_config(key: str, default: str = "") -> str:
 # Base project directory
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Session persistence storage
-SESSIONS_DIR = BASE_DIR / ".sessions"
-SESSIONS_DIR.mkdir(exist_ok=True)
+# Session persistence storage.
+# Vercel/Lambda deploys run from a read-only `/var/task` bundle. Store no
+# credentials there; SessionManager keeps cloud sessions in Streamlit's
+# per-user session state and skips disk writes in these environments.
+_IS_SERVERLESS = bool(
+    os.getenv("VERCEL")
+    or os.getenv("VERCEL_ENV")
+    or os.getenv("AWS_LAMBDA_FUNCTION_VERSION")
+)
+if _IS_SERVERLESS:
+    SESSIONS_DIR = Path(os.getenv("TMPDIR", "/tmp")) / "sabad-sessions"
+else:
+    SESSIONS_DIR = BASE_DIR / ".sessions"
+    try:
+        SESSIONS_DIR.mkdir(exist_ok=True)
+    except OSError:
+        # Read-only hosts outside the known serverless providers still boot;
+        # SessionManager will fall back to in-memory state when available.
+        SESSIONS_DIR = Path("/tmp") / "sabad-sessions"
 
 # Geolocation context (Default: Tehran - Keshavarz Boulevard / Yousef Abad)
 DEFAULT_LATITUDE = float(get_config("LATITUDE", get_config("DEFAULT_LATITUDE", "35.715298")))

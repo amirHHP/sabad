@@ -53,6 +53,16 @@ def test_dictated_mikham_list_keeps_every_item():
     ]
 
 
+def test_tiramisu_intent_keeps_mascarpone_specific():
+    text = "من دلم می‌خوام ترامیسو درست کنم. شیر می‌خوام، خامه می‌خوام، پنیر ماسکارپونه می‌خوام. همین دیگه."
+    basket = parse_grocery_input(text, use_llm=False)
+    assert [item.name for item in basket.items] == ["شیر", "خامه", "پنیر ماسکارپونه"]
+    assert all("دلم" not in item.name and "ترامیسو" not in item.raw_text for item in basket.items)
+
+    shortened = parse_single_item("پنیر ماسکارپونه می‌خوام. همین دیگه.")
+    assert shortened.name == "پنیر ماسکارپونه"
+
+
 def test_mikham_with_half_space_and_plain_conjunction_still_split():
     basket = parse_grocery_input("شیر می‌خوام خامه می‌خوام", use_llm=False)
     assert [item.name for item in basket.items] == ["شیر", "خامه"]
@@ -74,6 +84,33 @@ def test_mikham_does_not_drop_quantity_brand_or_flavored_milk():
     flavored = parse_single_item("شیر کاکائو کاله یک لیتری")
     assert flavored.name == "شیر"
     assert flavored.brand == "کاله"
+
+
+def test_gemini_parse_that_keeps_only_milk_is_repaired():
+    from sabad.models.grocery import ParsedGroceryBasket, ParsedGroceryItem
+    from sabad.normalizer.parser import _gemini_output_needs_repair
+
+    text = "خوب من پتی بور میخوام شیر میخوام خامه میخوام پنیر ماسکارپونه میخوام شکر میخوام پودر کاکائو میخوام"
+    collapsed = ParsedGroceryBasket(
+        raw_input=text,
+        items=[ParsedGroceryItem(raw_text="شیر", name="شیر")],
+        engine="gemini",
+    )
+    assert _gemini_output_needs_repair(text, collapsed) is True
+
+    renamed = ParsedGroceryBasket(
+        raw_input=text,
+        items=[
+            ParsedGroceryItem(raw_text="پتی بور", name="پتی بور"),
+            ParsedGroceryItem(raw_text="شیر", name="شیر"),
+            ParsedGroceryItem(raw_text="خامه", name="خامه"),
+            ParsedGroceryItem(raw_text="پنیر ماسکارپونه", name="پنیر"),
+            ParsedGroceryItem(raw_text="شکر", name="شکر"),
+            ParsedGroceryItem(raw_text="پودر کاکائو", name="پودر کاکائو"),
+        ],
+        engine="gemini",
+    )
+    assert _gemini_output_needs_repair(text, renamed) is True
 
 
 def test_parse_multi_item_basket():

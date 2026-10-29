@@ -1,0 +1,22 @@
+{
+  "entities": [
+    {
+      "id": "p500",
+      "name": "ماکارونی ۵۰۰ گرمی",
+      "price": 450000,
+      "okPrice": 450000,
+      "discountPercent": 0.0,
+      "quantity": 10,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "p700",
+      "name": "ماکارونی ۷۰۰ گرمی",
+      "price": 620000,
+      "okPrice": 560000,
+      "discountPercent": 9.7,
+      "quantity": 9,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "data": {
+    "vendor_product_variations": {
+      "items": [
+        {
+          "id": 501,
+          "products": [
+            {
+              "id": "car",
+              "title": "واکس و شامپو خودرو",
+              "brand": "گلرنگ",
+              "price": 30000,
+              "discount": 10000,
+              "stock": 8,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "shoe",
+              "title": "واکس کفش ساده",
+              "brand": null,
+              "price": 55000,
+              "discount": 10000,
+              "stock": 6,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

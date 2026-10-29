@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "id": "s200",
+      "productInfo": {
+        "id": "s200",
+        "name": "شامپو سر ۲۰۰ میلی‌لیتری",
+        "price": 90000,
+        "priceAfterDiscount": 90000,
+        "discountRatio": 0.0,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "s400",
+      "productInfo": {
+        "id": "s400",
+        "name": "شامپو سر ۴۰۰ میلی‌لیتری",
+        "price": 140000,
+        "priceAfterDiscount": 140000,
+        "discountRatio": 0.0,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "s1000",
+      "productInfo": {
+        "id": "s1000",
+        "name": "شامپو سر ۱۰۰۰ میلی‌لیتری",
+        "price": 280000,
+        "priceAfterDiscount": 240000,
+        "discountRatio": 14.3,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    },
+    {
+      "id": "body",
+      "productInfo": {
+        "id": "body",
+        "name": "شامپو بدن گیاهی",
+        "price": 70000,
+        "priceAfterDiscount": 70000,
+        "discountRatio": 0.0,
+        "images": [
+          "https://cdn.example.test/t.jpg"
+        ]
+      },
+      "vendorInfo": {
+        "vendorCode": "market-12",
+        "title": "سوپرمارکت تپسی",
+        "vendorType": "supermarket",
+        "businessType": "market",
+        "vendorStatus": true
+      }
+    }
+  ]
+}

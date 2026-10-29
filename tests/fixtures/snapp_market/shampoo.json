@@ -1,0 +1,57 @@
+{
+  "data": {
+    "vendor_product_variations": {
+      "items": [
+        {
+          "id": 501,
+          "products": [
+            {
+              "id": "s200",
+              "title": "شامپو سر ۲۰۰ میلی‌لیتری",
+              "brand": "گلرنگ",
+              "price": 90000,
+              "discount": 0,
+              "stock": 6,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "s400",
+              "title": "شامپو سر ۴۰۰ میلی‌لیتری",
+              "brand": "گلرنگ",
+              "price": 140000,
+              "discount": 0,
+              "stock": 4,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "s1000",
+              "title": "شامپو سر ۱۰۰۰ میلی‌لیتری",
+              "brand": "گلرنگ",
+              "price": 280000,
+              "discount": 40000,
+              "stock": 3,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            },
+            {
+              "id": "body",
+              "title": "شامپو بدن گیاهی",
+              "brand": "گلرنگ",
+              "price": 70000,
+              "discount": 0,
+              "stock": 5,
+              "images": [
+                "https://cdn.example.test/p.jpg"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

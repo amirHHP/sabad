@@ -1,0 +1,22 @@
+{
+  "entities": [
+    {
+      "id": "car",
+      "name": "واکس و شامپو خودرو",
+      "price": 300000,
+      "okPrice": 200000,
+      "discountPercent": 33.3,
+      "quantity": 8,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "shoe",
+      "name": "واکس کفش ساده",
+      "price": 550000,
+      "okPrice": 450000,
+      "discountPercent": 18.2,
+      "quantity": 6,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    }
+  ]
+}

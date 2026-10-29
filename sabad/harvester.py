@@ -13,10 +13,14 @@ from sabad.adapters.snapp_market import SnappMarketAdapter
 from sabad.adapters.digikala_jet import DigikalaJetAdapter
 from sabad.adapters.okala import OkalaAdapter
 from sabad.adapters.tapsi_market import TapsiMarketAdapter
+from sabad.config import HTTP_TIMEOUT
 from sabad.models.catalog import StoreItem, StoreInfo
 from sabad.models.grocery import ParsedGroceryItem
+from sabad.pricing import everyday_comparison_value, unit_price_options
+from sabad.security import log_store_failure
 from sabad.normalizer.matcher import (
     match_sku,
+    explain_sku_candidates,
     is_flavor_compatible,
     is_product_type_compatible,
     is_fat_compatible,
@@ -90,6 +94,85 @@ class CatalogHarvester:
             "okala": OkalaAdapter(),
             "tapsi_market": TapsiMarketAdapter(),
         }
+        # Per-run, user-visible evidence. This is deliberately kept on the
+        # request-scoped harvester and copied to Streamlit session state.
+        self.last_search_evidence: Dict[str, Dict[str, dict]] = {}
+
+    @staticmethod
+    def _query_variants(item: ParsedGroceryItem) -> List[str]:
+        """Build precise fallbacks without changing the user's requested item."""
+        base = f"{item.name} {item.brand or ''}".strip()
+        raw = clean_persian_text(item.raw_text)
+        variants = [base, raw]
+        synonyms = {
+            "شامپو": ["شامپو", "شامپو سر", "شامپو مو", "شامپو کوچک"],
+            "حوله": ["حوله", "حوله دستی", "حوله کوچک"],
+            "واکس": ["واکس", "واکس کفش", "واکس کفش کوچک"],
+            "تخم مرغ": ["تخم مرغ", "تخم‌مرغ", "تخم مرغ بسته"],
+            "ماکارونی": ["ماکارونی", "پاستا"],
+            "پاستا": ["پاستا", "ماکارونی"],
+            "پتی بور": ["پتی بور", "پتیبور", "بیسکویت پتی بور"],
+            "پنیر ماسکارپونه": ["پنیر ماسکارپونه", "ماسکارپونه"],
+            "پودر کاکائو": ["پودر کاکائو", "کاکائو"],
+        }
+        variants.extend(synonyms.get(item.name, []))
+        result: List[str] = []
+        for variant in variants:
+            normalized = clean_persian_text(variant).strip()
+            if normalized and normalized not in result:
+                result.append(normalized)
+        return result[:4]
+
+    async def _search_item_store(
+        self,
+        item: ParsedGroceryItem,
+        store_name: str,
+        adapter: BaseStoreAdapter,
+        lat: float,
+        lng: float,
+    ) -> Tuple[List[StoreItem], dict]:
+        """Search once, then broaden only when the first response cannot match."""
+        queries = self._query_variants(item)
+        merged: List[StoreItem] = []
+        seen_ids = set()
+        attempts = []
+
+        for query in queries:
+            try:
+                response = await asyncio.wait_for(adapter.search(query, lat, lng), timeout=HTTP_TIMEOUT)
+                response = response or []
+                for candidate in response:
+                    candidate_id = candidate.product_id or f"{candidate.title}:{candidate.discount_price}"
+                    if candidate_id not in seen_ids:
+                        seen_ids.add(candidate_id)
+                        merged.append(candidate)
+                attempts.append({"query": query, "result_count": len(response), "error": None})
+            except TimeoutError:
+                log_store_failure(store_name, "search", TimeoutError(query))
+                attempts.append({"query": query, "result_count": 0, "error": "timeout"})
+            except Exception as exc:
+                log_store_failure(store_name, "search", exc)
+                attempts.append({"query": query, "result_count": 0, "error": type(exc).__name__})
+
+            # For an explicitly sized request one compatible SKU is enough.
+            # For a generic request (e.g. «شامپو») keep all query variants so
+            # the cheapest comparable size can win instead of the first,
+            # often oversized, API result.
+            if item.volume_weight is not None:
+                if match_sku(item, [c for c in merged if c.is_in_stock]):
+                    break
+
+        evidence = explain_sku_candidates(item, merged)
+        evidence.update({
+            "requested": item.display_title,
+            "queries": attempts,
+            "selected": None,
+        })
+        if not merged and any(attempt.get("error") == "timeout" for attempt in attempts):
+            evidence["error"] = "timeout"
+        elif not merged and any(attempt.get("error") for attempt in attempts):
+            evidence["error"] = next(attempt["error"] for attempt in reversed(attempts) if attempt.get("error"))
+        return merged, evidence
 
     async def harvest_flash_deals(
         self, lat: float, lng: float
@@ -107,7 +190,7 @@ class CatalogHarvester:
 
         for (s_name, _), result in zip(tasks.items(), results):
             if isinstance(result, Exception):
-                logger.error(f"Error fetching flash deals from {s_name}: {result}")
+                log_store_failure(s_name, "flash_deals", result)
                 deals_by_store[s_name] = []
             else:
                 deals_by_store[s_name] = result
@@ -126,7 +209,7 @@ class CatalogHarvester:
         """
         # Step 1: Concurrently fetch store info & delivery tiers
         store_info_tasks = {
-            s_name: adapter.get_store_info(lat, lng)
+            s_name: asyncio.wait_for(adapter.get_store_info(lat, lng), timeout=HTTP_TIMEOUT)
             for s_name, adapter in self.adapters.items()
         }
         store_info_results = await asyncio.gather(
@@ -136,7 +219,7 @@ class CatalogHarvester:
         store_infos: Dict[str, StoreInfo] = {}
         for (s_name, _), res in zip(store_info_tasks.items(), store_info_results):
             if isinstance(res, Exception):
-                logger.error(f"Error fetching store info for {s_name}: {res}")
+                log_store_failure(s_name, "store_info", res)
                 store_infos[s_name] = StoreInfo(
                     platform=s_name,
                     store_id="unknown",
@@ -154,7 +237,7 @@ class CatalogHarvester:
             search_query = f"{item.name} {item.brand or ''}".strip()
             for s_name, adapter in self.adapters.items():
                 search_keys.append((item.raw_text, s_name, item))
-                search_coroutines.append(adapter.search(search_query, lat, lng))
+                search_coroutines.append(self._search_item_store(item, s_name, adapter, lat, lng))
 
         search_results = await asyncio.gather(
             *search_coroutines, return_exceptions=True
@@ -169,12 +252,25 @@ class CatalogHarvester:
         cands_by_item_store: Dict[str, Dict[str, List[StoreItem]]] = {
             item.raw_text: {} for item in basket_items
         }
-        for (raw_text, s_name, _), candidates_or_err in zip(search_keys, search_results):
-            if isinstance(candidates_or_err, Exception):
-                logger.error(f"Search error for '{raw_text}' on {s_name}: {candidates_or_err}")
+        self.last_search_evidence = {item.raw_text: {} for item in basket_items}
+        for (raw_text, s_name, _), result_or_err in zip(search_keys, search_results):
+            if isinstance(result_or_err, Exception):
+                log_store_failure(s_name, "search", result_or_err)
                 cands_by_item_store[raw_text][s_name] = []
+                self.last_search_evidence[raw_text][s_name] = {
+                    "requested": raw_text,
+                    "queries": [],
+                    "candidate_count": 0,
+                    "candidate_titles": [],
+                    "compatible": [],
+                    "rejected": [],
+                    "error": type(result_or_err).__name__,
+                    "selected": None,
+                }
             else:
-                cands_by_item_store[raw_text][s_name] = candidates_or_err
+                candidates, evidence = result_or_err
+                cands_by_item_store[raw_text][s_name] = candidates
+                self.last_search_evidence[raw_text][s_name] = evidence
 
         for item_obj in basket_items:
             raw_text = item_obj.raw_text
@@ -184,52 +280,127 @@ class CatalogHarvester:
             if item_obj.volume_weight is not None:
                 for s_name, cands in store_cands.items():
                     catalog_matches[raw_text][s_name] = match_sku(item_obj, cands)
-                continue
-
-            # User did NOT specify volume/size: harmonize variants across stores
-            # ponytail: Harmonize unconstrained queries to maximize identical cross-store variant coverage.
-            bucket_store_coverage: Dict[str, set] = {}
-            for s_name, cands in store_cands.items():
-                s_buckets = set()
-                for c in cands:
-                    if not c.is_in_stock or not is_product_type_compatible(item_obj.name, c.title):
-                        continue
-                    if not is_flavor_compatible(f"{item_obj.name} {raw_text}", c.title):
-                        continue
-                    if not is_fat_compatible(item_obj.fat_percentage, c.title):
-                        continue
-                    if item_obj.brand and item_obj.brand not in clean_persian_text(f"{c.title} {c.brand or ''}"):
-                        continue
-                    b = extract_size_bucket(c.title)
-                    s_buckets.add(b)
-                for b in s_buckets:
-                    bucket_store_coverage.setdefault(b, set()).add(s_name)
-
-            preferred_buckets = {
-                "مایع دستشویی": ["vol_small", "vol_standard", "vol_family", "vol_bulk"],
-                "مایع ظرفشویی": ["vol_standard", "vol_small", "vol_family", "vol_bulk"],
-                "دستمال توالت": ["count_4", "count_2", "count_8", "count_12"],
-                "شیر": ["vol_standard", "vol_family", "vol_small"],
-                "پنیر": ["vol_small", "vol_standard"],
-            }
-            pref_list = preferred_buckets.get(item_obj.name, [])
-
-            def bucket_priority(b: str) -> Tuple[int, int]:
-                store_count = len(bucket_store_coverage.get(b, set()))
-                pref_idx = pref_list.index(b) if b in pref_list else 99
-                return (store_count, -pref_idx)
-
-            valid_buckets = {k: v for k, v in bucket_store_coverage.items() if k != "unknown"}
-            if valid_buckets:
-                best_bucket = max(valid_buckets.keys(), key=bucket_priority)
-                for s_name, cands in store_cands.items():
-                    filtered = [
-                        c for c in cands
-                        if extract_size_bucket(c.title) == best_bucket
-                    ]
-                    catalog_matches[raw_text][s_name] = match_sku(item_obj, filtered)
             else:
+                # User did NOT specify volume/size. Pick one comparable size
+                # family for the basket first, then choose the cheapest
+                # compatible SKU inside that family at every store. This
+                # prevents a 4L shampoo jug from beating a 250/400ml bottle
+                # just because its title scored higher in fuzzy matching.
+                bucket_store_coverage: Dict[str, set] = {}
+                bucket_prices: Dict[str, List[float]] = {}
+                core_aliases = {
+                    "ماکارونی": ("ماکارونی", "پاستا"),
+                    "پاستا": ("ماکارونی", "پاستا"),
+                    "شامپو": ("شامپو",),
+                    "حوله": ("حوله",),
+                    "واکس": ("واکس",),
+                }
+
+                def is_eligible(candidate: StoreItem) -> bool:
+                    if not candidate.is_in_stock:
+                        return False
+                    candidate_text = clean_persian_text(f"{candidate.title} {candidate.brand or ''}")
+                    aliases = core_aliases.get(item_obj.name, (item_obj.name,))
+                    if not any(alias in candidate_text for alias in aliases):
+                        return False
+                    if not is_product_type_compatible(item_obj.name, candidate.title, raw_text):
+                        return False
+                    if not is_flavor_compatible(f"{item_obj.name} {raw_text}", candidate.title):
+                        return False
+                    if not is_fat_compatible(item_obj.fat_percentage, candidate.title):
+                        return False
+                    if item_obj.brand and item_obj.brand not in clean_persian_text(f"{candidate.title} {candidate.brand or ''}"):
+                        return False
+                    return True
+
                 for s_name, cands in store_cands.items():
-                    catalog_matches[raw_text][s_name] = match_sku(item_obj, cands)
+                    s_buckets = set()
+                    for candidate in cands:
+                        if not is_eligible(candidate):
+                            continue
+                        bucket = extract_size_bucket(candidate.title)
+                        if bucket == "unknown":
+                            continue
+                        s_buckets.add(bucket)
+                        if candidate.discount_price > 0:
+                            bucket_prices.setdefault(bucket, []).append(everyday_comparison_value(candidate))
+                    for bucket in s_buckets:
+                        bucket_store_coverage.setdefault(bucket, set()).add(s_name)
+
+                preferred_buckets = {
+                    "مایع دستشویی": ["vol_small", "vol_standard", "vol_family", "vol_bulk"],
+                    "مایع ظرفشویی": ["vol_standard", "vol_small", "vol_family", "vol_bulk"],
+                    "دستمال توالت": ["count_4", "count_2", "count_8", "count_12"],
+                    "شیر": ["vol_standard", "vol_family", "vol_small"],
+                    "پنیر": ["vol_small", "vol_standard"],
+                }
+                pref_list = preferred_buckets.get(item_obj.name, [])
+
+                def bucket_priority(bucket: str) -> Tuple[int, int, float]:
+                    store_count = len(bucket_store_coverage.get(bucket, set()))
+                    pref_idx = pref_list.index(bucket) if bucket in pref_list else 99
+                    # When coverage and explicit category preference tie,
+                    # choose the lower-priced family (the generic case for
+                    # shampoo, pasta, eggs, and similar products).
+                    average_price = sum(bucket_prices.get(bucket, [float("inf")])) / max(len(bucket_prices.get(bucket, [])), 1)
+                    return (store_count, -pref_idx, -average_price)
+
+                valid_buckets = {k for k in bucket_store_coverage if k != "unknown"}
+                everyday_buckets = {
+                    bucket for bucket in valid_buckets
+                    if bucket in {"vol_small", "vol_standard"} or bucket.startswith(("count_", "sheet_"))
+                }
+                # A 4L jug is a different purchase from a 200–1000ml bottle.
+                # Compare those everyday sizes with each other by unit price,
+                # and only fall back to bulk when the store has nothing smaller.
+                selection_buckets = everyday_buckets or valid_buckets
+                if selection_buckets:
+                    best_bucket = max(selection_buckets, key=bucket_priority)
+                    covered_stores = bucket_store_coverage[best_bucket]
+                    for s_name, cands in store_cands.items():
+                        filtered = [
+                            candidate for candidate in cands
+                            if extract_size_bucket(candidate.title) == best_bucket and is_eligible(candidate)
+                        ]
+                        if filtered:
+                            catalog_matches[raw_text][s_name] = match_sku(item_obj, filtered)
+                        else:
+                            # Keep a valid result when a store has no SKU in
+                            # the shared family; the evidence records that its
+                            # local assortment differs instead of declaring the
+                            # item absent solely because size was unspecified.
+                            catalog_matches[raw_text][s_name] = match_sku(
+                                item_obj,
+                                [candidate for candidate in cands if is_eligible(candidate)] or cands,
+                            )
+                            if s_name not in covered_stores:
+                                self.last_search_evidence[raw_text][s_name]["size_harmonization"] = (
+                                    f"حجم {best_bucket} در این فروشگاه موجود نبود؛ ارزان‌ترین گزینهٔ منطبق نمایش داده شد."
+                                )
+                else:
+                    for s_name, cands in store_cands.items():
+                        catalog_matches[raw_text][s_name] = match_sku(item_obj, cands)
+
+            for s_name, selected in catalog_matches[raw_text].items():
+                evidence = self.last_search_evidence[raw_text].setdefault(s_name, {})
+                visible = [
+                    candidate
+                    for candidate in cands_by_item_store.get(raw_text, {}).get(s_name, [])
+                    if candidate.is_in_stock
+                    and is_product_type_compatible(item_obj.name, candidate.title, raw_text)
+                ]
+                evidence["unit_options"] = unit_price_options(visible)
+                evidence["selected"] = selected.title if selected else None
+                evidence["selected_in_stock"] = bool(selected and selected.is_in_stock)
+                # The final harmonization can filter a title that appeared in
+                # the API response. Preserve that fact for the diagnostic UI.
+                if selected is None and evidence.get("candidate_count", 0):
+                    evidence["final_reason"] = "نتایج برگشتند اما با نوع کالا/حجم/وزن/شباهت نام منطبق نشدند."
+                elif selected is None:
+                    evidence["final_reason"] = "پاسخ جست‌وجوی این فروشگاه برای این عبارت خالی بود."
+                elif not selected.is_in_stock:
+                    evidence["final_reason"] = "کالای منطبق پیدا شد اما موجودی شعبه صفر است."
+                else:
+                    evidence["final_reason"] = "کالای منطبق و موجود پیدا شد."
 
         return store_infos, catalog_matches

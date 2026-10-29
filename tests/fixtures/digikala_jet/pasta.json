@@ -1,0 +1,36 @@
+{
+  "data": {
+    "result": [
+      {
+        "id": "p500",
+        "title": "ماکارونی ۵۰۰ گرمی",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 450000,
+          "discount": 0,
+          "discount_percentage": 0.0
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "p700",
+        "title": "ماکارونی ۷۰۰ گرمی",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 620000,
+          "discount": 60000,
+          "discount_percentage": 9.7
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      }
+    ]
+  }
+}

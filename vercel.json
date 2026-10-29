@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "web/package.json",
+      "use": "@vercel/next"
+    },
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": { "runtime": "python3.12" }
+    }
+  ],
+  "routes": [
+    { "src": "/api/health", "dest": "/api/index.py" },
+    { "src": "/api/v1/(.*)", "dest": "/api/index.py" },
+    { "src": "/(.*)", "dest": "/web/$1" }
+  ]
+}

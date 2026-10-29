@@ -4,10 +4,12 @@ Stores tokens and cookies in .sessions/ across runs.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 from datetime import datetime
 from sabad.config import SESSIONS_DIR
+from sabad.security import log_store_failure
 
 
 class SessionManager:
@@ -42,7 +44,13 @@ class SessionManager:
     def _is_cloud_multi_tenant(cls) -> bool:
         """Checks if executing in a multi-tenant cloud environment where disk writes must be disabled."""
         import os
-        if os.environ.get("STREAMLIT_COMMUNITY_CLOUD") or os.environ.get("MULTI_TENANT_CLOUD"):
+        if (
+            os.environ.get("STREAMLIT_COMMUNITY_CLOUD")
+            or os.environ.get("MULTI_TENANT_CLOUD")
+            or os.environ.get("VERCEL")
+            or os.environ.get("VERCEL_ENV")
+            or os.environ.get("SABAD_ENV", "").lower() == "production"
+        ):
             return True
         current_test = os.environ.get("PYTEST_CURRENT_TEST", "")
         if "multi_tenant" in current_test:
@@ -54,6 +62,50 @@ class SessionManager:
         return SESSIONS_DIR / f"{platform}.json"
 
     @classmethod
+    def _scope(cls) -> str:
+        st_state = cls._get_streamlit_session_state()
+        if st_state is None:
+            return os.environ.get("SABAD_SESSION_SCOPE", "local")
+        scope = st_state.get("_sabad_scope")
+        if scope:
+            return str(scope)
+        user = None
+        try:
+            import streamlit as st
+            user = getattr(st, "user", None)
+        except Exception:
+            user = None
+        email = getattr(user, "email", None) if user else None
+        if not email:
+            import uuid
+            email = uuid.uuid4().hex
+        st_state["_sabad_scope"] = str(email)
+        return str(email)
+
+    @classmethod
+    def _kv_key(cls, platform: str) -> str:
+        return f"session:{cls._scope()}:{platform}"
+
+    @classmethod
+    def _read_kv(cls, platform: str):
+        kv = cls._session_kv()
+        if kv is None:
+            return None
+        try:
+            return kv.get(cls._kv_key(platform))
+        except Exception as exc:
+            log_store_failure(platform, "session_load", exc)
+            return None
+
+    @classmethod
+    def _session_kv(cls):
+        try:
+            from sabad.durable_store import open_session_kv
+            return open_session_kv()
+        except Exception:
+            return None
+
+    @classmethod
     def load_session(cls, platform: str) -> Dict[str, Any]:
         """Loads stored session credentials for a platform."""
         st_state = cls._get_streamlit_session_state()
@@ -62,7 +114,17 @@ class SessionManager:
             if isinstance(data, dict) and data:
                 return dict(data)
             if cls._is_cloud_multi_tenant():
+                stored = cls._read_kv(platform)
+                if isinstance(stored, dict):
+                    st_state[f"_session_{platform}"] = dict(stored)
+                    return dict(stored)
                 return {}
+
+        stored = cls._read_kv(platform)
+        if isinstance(stored, dict):
+            return dict(stored)
+        if cls._is_cloud_multi_tenant():
+            return {}
 
         path = cls._get_path(platform)
         if not path.exists():
@@ -78,21 +140,28 @@ class SessionManager:
 
     @classmethod
     def save_session(cls, platform: str, session_data: Dict[str, Any]) -> None:
-        """Persists session credentials to session_state and disk."""
+        """Persists session credentials to session state and Redis or the local database."""
         session_data["updated_at"] = datetime.now().isoformat()
 
         st_state = cls._get_streamlit_session_state()
         if st_state is not None:
             st_state[f"_session_{platform}"] = dict(session_data)
-            if cls._is_cloud_multi_tenant():
-                return
+
+        kv = cls._session_kv()
+        if kv is not None:
+            try:
+                kv.set(cls._kv_key(platform), dict(session_data))
+            except Exception as exc:
+                log_store_failure(platform, "session_save", exc)
+        if cls._is_cloud_multi_tenant():
+            return
 
         path = cls._get_path(platform)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(session_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Error persisting session to {path}: {e}")
+        except Exception as exc:
+            log_store_failure(platform, "session_save", exc)
 
     @classmethod
     def save_tokens(
@@ -122,8 +191,15 @@ class SessionManager:
             key = f"_session_{platform}"
             if key in st_state:
                 del st_state[key]
-            if cls._is_cloud_multi_tenant():
-                return
+
+        kv = cls._session_kv()
+        if kv is not None:
+            try:
+                kv.delete(cls._kv_key(platform))
+            except Exception as exc:
+                log_store_failure(platform, "session_clear", exc)
+        if cls._is_cloud_multi_tenant():
+            return
 
         path = cls._get_path(platform)
         if path.exists():

@@ -1,0 +1,22 @@
+{
+  "entities": [
+    {
+      "id": "e6",
+      "name": "تخم مرغ ۶ عددی",
+      "price": 900000,
+      "okPrice": 900000,
+      "discountPercent": 0.0,
+      "quantity": 12,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    },
+    {
+      "id": "e20",
+      "name": "تخم مرغ ۲۰ عددی",
+      "price": 2400000,
+      "okPrice": 2000000,
+      "discountPercent": 16.7,
+      "quantity": 5,
+      "imageUrl": "https://cdn.example.test/o.jpg"
+    }
+  ]
+}

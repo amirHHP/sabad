@@ -1,0 +1,38 @@
+{
+  "data": {
+    "result": [
+      {
+        "id": "car",
+        "title": "واکس و شامپو خودرو",
+        "shop_id": 88,
+        "brand": {
+          "title": "گلرنگ"
+        },
+        "price": {
+          "price": 300000,
+          "discount": 100000,
+          "discount_percentage": 33.3
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      },
+      {
+        "id": "shoe",
+        "title": "واکس کفش ساده",
+        "shop_id": 88,
+        "brand": null,
+        "price": {
+          "price": 550000,
+          "discount": 100000,
+          "discount_percentage": 18.2
+        },
+        "stock": {
+          "has_stock": true
+        },
+        "media": "https://cdn.example.test/j.jpg"
+      }
+    ]
+  }
+}
