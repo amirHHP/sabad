@@ -7,6 +7,7 @@ search, and never returns provider keys.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from typing import Optional
@@ -20,8 +21,10 @@ from starlette.routing import Route
 
 from sabad.app_services import compare_and_optimize_basket
 from sabad.compare_view import build_compare_view
+from sabad import config
 from sabad.config import DEFAULT_LATITUDE, DEFAULT_LONGITUDE
 from sabad.feedback import FEEDBACK_REASONS, FeedbackStore
+from sabad.normalizer.gemini_parser import transcribe_audio_gemini
 from sabad.normalizer.parser import parse_grocery_input
 from sabad.price_history import PriceHistoryStore
 from sabad.security import (
@@ -30,12 +33,14 @@ from sabad.security import (
     configured_api_key,
     is_production,
     log_store_failure,
+    validate_audio_size,
     validate_basket_text,
     verify_api_key,
 )
 
 _compare_limiter = SlidingWindowLimiter()
 _feedback_limiter = SlidingWindowLimiter(limit=30, window_seconds=60)
+_transcribe_limiter = SlidingWindowLimiter(limit=8, window_seconds=60)
 _history: Optional[PriceHistoryStore] = None
 _feedback: Optional[FeedbackStore] = None
 
@@ -187,11 +192,100 @@ async def submit_feedback(request: Request):
     return JSONResponse({"ok": True})
 
 
+def _gemini_key() -> str:
+    return (os.getenv("GEMINI_API_KEY") or getattr(config, "GEMINI_API_KEY", "") or "").strip()
+
+
+async def transcribe(request: Request):
+    """Turn a short voice note into the shopping list text."""
+    denied = _auth_failure(request)
+    if denied is not None:
+        return denied
+    allowed, retry_after = _transcribe_limiter.allow(_caller(request))
+    if not allowed:
+        return JSONResponse(
+            {"error": f"ضبط‌های این دقیقه تمام شد. {retry_after} ثانیهٔ دیگر دوباره امتحان کن."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "بدنهٔ درخواست قابل خواندن نیست."}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "بدنهٔ درخواست باید یک شیء JSON باشد."}, status_code=400)
+
+    encoded = payload.get("audio_base64")
+    if not isinstance(encoded, str) or not encoded.strip():
+        return JSONResponse({"error": "صدایی نرسید. دوباره ضبط کن."}, status_code=400)
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return JSONResponse({"error": "صدایی نرسید. دوباره ضبط کن."}, status_code=400)
+    size_check = validate_audio_size(len(audio))
+    if not size_check.ok:
+        return JSONResponse({"error": size_check.message}, status_code=400)
+    if not _gemini_key():
+        return JSONResponse(
+            {"error": "تبدیل صدا به متن هنوز فعال نشده؛ لیست را بنویس."},
+            status_code=503,
+        )
+
+    mime_type = str(payload.get("mime_type") or "audio/webm")
+    if not mime_type.startswith("audio/"):
+        mime_type = "audio/webm"
+    text = transcribe_audio_gemini(audio, mime_type.split(";", 1)[0])
+    if not text:
+        return JSONResponse(
+            {"error": "صدا واضح نبود. دوباره ضبط کن یا لیست را بنویس."},
+            status_code=422,
+        )
+    return JSONResponse({"text": text})
+
+
+async def parse_list(request: Request):
+    """Read the list before the expensive store search, so the shopper can correct it."""
+    denied = _auth_failure(request)
+    if denied is not None:
+        return denied
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "بدنهٔ درخواست قابل خواندن نیست."}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "بدنهٔ درخواست باید یک شیء JSON باشد."}, status_code=400)
+    text = str(payload.get("text") or "")
+    basket_check = validate_basket_text(text)
+    if not basket_check.ok:
+        return JSONResponse({"error": basket_check.message}, status_code=400)
+    basket = parse_grocery_input(text, use_llm=False)
+    if not basket.items:
+        return JSONResponse({"error": "لطفاً حداقل یک قلم کالا وارد کن."}, status_code=400)
+    if len(basket.items) > MAX_BASKET_ITEMS:
+        return JSONResponse(
+            {"error": f"حداکثر {MAX_BASKET_ITEMS} قلم در هر جست‌وجو بررسی می‌شود."},
+            status_code=400,
+        )
+    return JSONResponse({
+        "items": [
+            {
+                "name": item.name,
+                "raw_text": item.raw_text,
+                "title": item.display_title,
+                "quantity": item.quantity,
+            }
+            for item in basket.items
+        ]
+    })
+
+
 def api_routes() -> list[Route]:
     return [
         Route("/api/health", health, methods=["GET"]),
         Route("/api/v1/compare", compare, methods=["POST"]),
+        Route("/api/v1/parse", parse_list, methods=["POST"]),
         Route("/api/v1/feedback", submit_feedback, methods=["POST"]),
+        Route("/api/v1/transcribe", transcribe, methods=["POST"]),
     ]
 
 

@@ -1,5 +1,6 @@
 """API authentication, rate limits, secret redaction, and per-store timeouts."""
 
+import base64
 from unittest.mock import AsyncMock
 
 import httpx
@@ -108,6 +109,47 @@ def test_production_without_api_key_is_rejected(monkeypatch):
     assert response.status_code == 503
     assert "test-key" not in response.text
     assert "GEMINI" not in response.text
+
+
+def test_transcribe_returns_the_shopping_list(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
+    monkeypatch.setattr(http_api, "transcribe_audio_gemini", lambda audio, mime: "شیر، نان")
+    response = client.post(
+        "/api/v1/transcribe",
+        json={"audio_base64": base64.b64encode(b"voice").decode(), "mime_type": "audio/webm"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["text"] == "شیر، نان"
+    assert "test-gemini" not in response.text
+
+
+def test_transcribe_without_gemini_stays_closed(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(http_api.config, "GEMINI_API_KEY", "")
+    response = client.post(
+        "/api/v1/transcribe",
+        json={"audio_base64": base64.b64encode(b"voice").decode(), "mime_type": "audio/webm"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+    assert response.status_code == 503
+    assert "GEMINI" not in response.text
+    assert "بنویس" in response.json()["error"]
+
+
+def test_parse_lists_items_before_search(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    response = client.post(
+        "/api/v1/parse",
+        json={"text": "شیر، نان، تخم‌مرغ"},
+        headers={"Authorization": "Bearer test-key"},
+    )
+    assert response.status_code == 200
+    names = [item["name"] for item in response.json()["items"]]
+    assert "شیر" in names
+    assert len(names) >= 2
 
 
 def test_compare_requires_the_configured_key(monkeypatch, tmp_path):

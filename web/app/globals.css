@@ -64,7 +64,7 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid #b7e4d6; outli
 
 .steps {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
   margin: 12px 0 18px;
 }
@@ -95,6 +95,26 @@ h1 {
   line-height: 1.35;
   font-weight: 800;
 }
+
+.mic-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0 4px;
+}
+
+.mic {
+  width: 84px;
+  height: 84px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 800;
+  font-size: 1rem;
+}
+
+.mic.live { background: #d94747; }
+.mic:disabled { opacity: 0.7; }
 
 .muted { margin: 0; color: var(--muted); font-size: 0.95rem; line-height: 1.6; }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 type UnitOption = {
   product_id: string;
@@ -79,6 +79,19 @@ const EXAMPLES = [
   { label: "صبحانه", text: "پنیر، کره، چای" },
 ];
 
+const PLACES = [
+  { label: "یوسف‌آباد", latitude: 35.715298, longitude: 51.404343 },
+  { label: "سعادت‌آباد", latitude: 35.780833, longitude: 51.371389 },
+  { label: "تجریش", latitude: 35.804167, longitude: 51.428889 },
+  { label: "تهرانپارس", latitude: 35.733333, longitude: 51.533333 },
+];
+
+type Step = "say" | "check" | "basket";
+type HeardItem = { name: string; raw_text: string; title: string; quantity: number };
+
+const STEP_MARK: Record<Step, string> = { say: "۱ از ۳", check: "۲ از ۳", basket: "۳ از ۳" };
+const STEP_AT: Record<Step, number> = { say: 0, check: 1, basket: 2 };
+
 function toman(value: number | null) {
   if (value == null) return "";
   return `${Math.round(value).toLocaleString("en-US")} تومان`;
@@ -150,28 +163,127 @@ function buildShelves(result: CompareResponse): Shelf[] {
 }
 
 export default function HomePage() {
-  const [step, setStep] = useState<"ask" | "result">("ask");
+  const [step, setStep] = useState<Step>("say");
   const [text, setText] = useState("");
+  const [items, setItems] = useState<HeardItem[]>([]);
+  const [placeIndex, setPlaceIndex] = useState(0);
   const [result, setResult] = useState<CompareResponse | null>(null);
   const [selected, setSelected] = useState("optimal");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [openKey, setOpenKey] = useState("");
   const [savedKey, setSavedKey] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [hearing, setHearing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const shelves = useMemo(() => (result ? buildShelves(result) : []), [result]);
   const shelf = shelves.find((item) => item.id === selected) ?? shelves[0];
 
+  async function sendRecording(blob: Blob) {
+    setHearing(true);
+    setError("");
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x2000) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + 0x2000));
+      }
+      const response = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          audio_base64: btoa(binary),
+          mime_type: blob.type || "audio/webm",
+        }),
+      });
+      const payload = (await response.json()) as { text?: string; error?: string };
+      if (!response.ok || !payload.text) {
+        setError(payload.error || "صدا واضح نبود. دوباره ضبط کن یا لیست را بنویس.");
+        return;
+      }
+      setText(payload.text);
+      await review(payload.text);
+    } catch {
+      setError("ارتباط برای تبدیل صدا برقرار نشد.");
+    } finally {
+      setHearing(false);
+    }
+  }
+
+  async function toggleRecord() {
+    if (hearing) return;
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    setError("");
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError("اجازهٔ میکروفون داده نشد.");
+      return;
+    }
+    const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    const mimeType = preferred.find((item) => MediaRecorder.isTypeSupported(item));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    chunksRef.current = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      setRecording(false);
+      const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      void sendRecording(blob);
+    };
+    recorderRef.current = recorder;
+    recorder.start();
+    setRecording(true);
+  }
+
+  async function review(list: string) {
+    const trimmed = list.trim();
+    if (!trimmed || pending) return;
+    setPending(true);
+    setError("");
+    try {
+      const response = await fetch("/api/parse", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: trimmed }),
+      });
+      const payload = (await response.json()) as { items?: HeardItem[]; error?: string };
+      if (!response.ok || !payload.items?.length) {
+        setError(payload.error || "از این لیست قلمی درنیامد.");
+        return;
+      }
+      setItems(payload.items);
+      setStep("check");
+    } catch {
+      setError("ارتباط برای خواندن لیست برقرار نشد.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   async function compare() {
-    const list = text.trim();
-    if (!list || pending) return;
+    const list = items.map((item) => item.raw_text || item.title).filter(Boolean).join("، ");
+    const place = PLACES[placeIndex];
+    if (!list || !place || pending) return;
     setPending(true);
     setError("");
     try {
       const response = await fetch("/api/compare", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: list }),
+        body: JSON.stringify({
+          text: list,
+          latitude: place.latitude,
+          longitude: place.longitude,
+        }),
       });
       const payload = (await response.json()) as CompareResponse;
       if (!response.ok) {
@@ -183,7 +295,7 @@ export default function HomePage() {
       setSelected(next[0]?.id ?? "optimal");
       setOpenKey("");
       setSavedKey("");
-      setStep("result");
+      setStep("basket");
     } catch {
       setError("ارتباط با سرویس مقایسه برقرار نشد.");
     } finally {
@@ -211,18 +323,36 @@ export default function HomePage() {
     <main className="app">
       <header className="top">
         <span className="brand">سبد</span>
-        <span className="phase">{step === "ask" ? "۱ از ۲" : "۲ از ۲"}</span>
+        <span className="phase">{STEP_MARK[step]}</span>
       </header>
       <div className="steps" aria-hidden="true">
-        <span className="on" />
-        <span className={step === "result" ? "on" : undefined} />
+        {[0, 1, 2].map((mark) => (
+          <span className={mark <= STEP_AT[step] ? "on" : undefined} key={mark} />
+        ))}
       </div>
-      <p className="sr">{step === "ask" ? "مرحله ۱ از ۲. نوشتن لیست." : "مرحله ۲ از ۲. نتیجهٔ مقایسه."}</p>
+      <p className="sr">
+        {step === "say"
+          ? "مرحله ۱ از ۳. گفتن یا نوشتن لیست."
+          : step === "check"
+            ? "مرحله ۲ از ۳. تأیید قلم‌ها و محل تحویل."
+            : "مرحله ۳ از ۳. سبد و قیمت."}
+      </p>
 
-      {step === "ask" ? (
+      {step === "say" ? (
         <section className="screen ask">
-          <h1>لیستت را بنویس</h1>
-          <p className="muted">هر قلم را با ویرگول جدا کن.</p>
+          <h1>لیستت را بگو</h1>
+          <p className="muted">یا اگر راحت‌تری، بنویس.</p>
+          <div className="mic-wrap">
+            <button
+              className={recording ? "mic live" : "mic"}
+              type="button"
+              onClick={toggleRecord}
+              disabled={hearing || pending}
+              aria-label={recording ? "پایان ضبط" : "ضبط لیست خرید"}
+            >
+              {hearing ? "…" : recording ? "پایان" : "ضبط"}
+            </button>
+          </div>
           <textarea
             value={text}
             placeholder="مثلاً شامپو، حوله، واکس"
@@ -243,12 +373,58 @@ export default function HomePage() {
           </div>
           <div className="dock">
             {error ? <p className="alert">{error}</p> : null}
-            <button className="primary" type="button" onClick={compare} disabled={pending || !text.trim()}>
+            <button className="primary" type="button" onClick={() => review(text)} disabled={pending || hearing || !text.trim()}>
+              {pending ? "داریم می‌خوانیم…" : "ادامه"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {step === "check" ? (
+        <section className="screen">
+          <h1>این‌ها را برداشتیم</h1>
+          <p className="muted">غلط‌ها را حذف کن و محل تحویل را انتخاب کن.</p>
+          <div className="sheet">
+            {items.map((item, index) => (
+              <article className="row" key={`${item.raw_text}-${index}`}>
+                <div className="row-head">
+                  <h2>{item.title}</h2>
+                  <button
+                    className="quiet"
+                    type="button"
+                    onClick={() => setItems(items.filter((_, itemIndex) => itemIndex !== index))}
+                  >
+                    حذف
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="chips">
+            {PLACES.map((place, index) => (
+              <button
+                className={placeIndex === index ? "chip on" : "chip"}
+                type="button"
+                key={place.label}
+                onClick={() => setPlaceIndex(index)}
+              >
+                {place.label}
+              </button>
+            ))}
+          </div>
+          <div className="dock">
+            {error ? <p className="alert">{error}</p> : null}
+            <button className="quiet" type="button" onClick={() => { setStep("say"); setError(""); }}>
+              لیست را عوض کن
+            </button>
+            <button className="primary" type="button" onClick={compare} disabled={pending || items.length === 0}>
               {pending ? "در حال مقایسه…" : "مقایسه کن"}
             </button>
           </div>
         </section>
-      ) : (
+      ) : null}
+
+      {step === "basket" ? (
         <section className="screen">
           {shelf ? (
             <>
@@ -326,15 +502,15 @@ export default function HomePage() {
               className="secondary"
               type="button"
               onClick={() => {
-                setStep("ask");
+                setStep("check");
                 setError("");
               }}
             >
-              ویرایش لیست
+              اصلاح لیست
             </button>
           </div>
         </section>
-      )}
+      ) : null}
     </main>
   );
 }
