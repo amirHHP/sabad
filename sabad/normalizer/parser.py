@@ -44,8 +44,11 @@ KNOWN_PRODUCTS = [
     ("دستمال کاغذی", "سلولزی"),
     ("دستمال حوله", "سلولزی"),
     ("دستمال", "سلولزی"),
+    ("پتی بور", "تنقلات"),
+    ("پودر کاکائو", "خواربار"),
     ("شیر", "لبنیات"),
     ("ماست", "لبنیات"),
+    ("پنیر ماسکارپونه", "لبنیات"),
     ("پنیر", "لبنیات"),
     ("خامه", "لبنیات"),
     ("کره", "لبنیات"),
@@ -217,12 +220,52 @@ def extract_brand(text: str) -> Tuple[Optional[str], str]:
     return None, cleaned
 
 
+def fold_grocery_aliases(text: str) -> str:
+    """Collapse spelling variants that voice notes use for the same grocery item."""
+    text = clean_persian_text(text)
+    text = re.sub(r"پتی\s*بور|پتیبور|پیتی\s*بور|پتیت\s*بور", "پتی بور", text)
+    text = re.sub(r"مسکارپونه", "ماسکارپونه", text)
+    text = re.sub(r"ماسکارپون(?!ه)", "ماسکارپونه", text)
+    text = re.sub(r"پنیر\s*ماسکارپونه", "پنیر ماسکارپونه", text)
+    text = re.sub(r"(?<!پنیر )ماسکارپونه", "پنیر ماسکارپونه", text)
+    text = re.sub(r"پودر\s*کاکائو|پودر\s*کاکاو", "پودر کاکائو", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _contains_product(text: str, name: str) -> bool:
+    """True when ``name`` is a whole word or phrase, not a prefix of a longer word."""
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) is not None
+
+
+_LIST_FILLERS = {"خوب", "خب", "آره", "بله", "من", "لطفا", "بعد", "بعدش", "حالا", "دیگه", "هم"}
+# Voice notes often list items as «پتی بور میخوام شیر میخوام …» with no comma or «و».
+_REQUEST_SPLIT_RE = re.compile(
+    r"(?:^|\s+)(?:می\s*خوام(?:ش)?(?:\s+که)?|می\s*خواستم|لازم\s*دارم)(?:\s+|$)"
+)
+
+
+def _strip_list_fillers(text: str) -> str:
+    words = text.replace("،", " ").split()
+    while words and (words[0] in _LIST_FILLERS or words[0] == "و"):
+        words.pop(0)
+    while words and words[-1] in _LIST_FILLERS:
+        words.pop()
+    return " ".join(words).strip()
+
+
+def _split_on_requests(chunk: str) -> List[str]:
+    parts = [part.strip() for part in _REQUEST_SPLIT_RE.split(chunk)]
+    parts = [part for part in parts if part]
+    return parts or [chunk]
+
+
 def extract_product_and_category(text: str) -> Tuple[str, Optional[str]]:
     """Identifies the core product noun and general category."""
-    for prod_name, cat in KNOWN_PRODUCTS:
-        if prod_name in text:
-            return prod_name, cat
-    
+    found = [(name, cat) for name, cat in KNOWN_PRODUCTS if _contains_product(text, name)]
+    if found:
+        found.sort(key=lambda item: len(item[0]), reverse=True)
+        return found[0]
+
     words = [w for w in text.split() if len(w) > 1 and w not in ["عدد", "تا", "بسته", "کیلو", "یک", "دو"]]
     fallback_name = " ".join(words[:2]) if words else text
     return fallback_name or "کالای عمومی", None
@@ -230,7 +273,7 @@ def extract_product_and_category(text: str) -> Tuple[str, Optional[str]]:
 
 def parse_single_item(raw_phrase: str) -> ParsedGroceryItem:
     """Parses a single grocery line or item expression into a ParsedGroceryItem."""
-    cleaned = clean_persian_text(raw_phrase)
+    cleaned = fold_grocery_aliases(raw_phrase)
     
     # Priority 1: Extract volume / weight FIRST to avoid consuming volumes as quantities
     vol_weight, unit, cleaned = extract_volume_weight(cleaned)
@@ -262,26 +305,34 @@ def parse_single_item(raw_phrase: str) -> ParsedGroceryItem:
 def parse_grocery_input_rule_based(raw_input: str) -> ParsedGroceryBasket:
     """
     Deterministically parses a multi-item Persian user input text using rule-based regex patterns.
-    Handles delimiters: commas (، ,), newlines, and conjunction words like ' و '.
+    Handles delimiters: commas (، ,), newlines, conjunctions like ' و ', and
+    repeated request verbs such as 'میخوام' in dictated lists.
     """
     if not raw_input or not raw_input.strip():
         return ParsedGroceryBasket(raw_input="", items=[], engine="rule_based")
 
-    cleaned_input = clean_persian_text(raw_input)
+    cleaned_input = fold_grocery_aliases(raw_input)
     phrases = re.split(r'[,،\n;؛]+', cleaned_input)
     
     items: List[ParsedGroceryItem] = []
+    product_starts = sorted((name for name, _ in KNOWN_PRODUCTS), key=len, reverse=True)
+    next_item = r"(?:یک|دو|سه|چهار|پنج|یه|\d+)\s+|" + "|".join(re.escape(p) for p in product_starts)
     for chunk in phrases:
         chunk = chunk.strip()
         if not chunk:
             continue
-            
-        sub_chunks = re.split(r'\s+و\s+(?=(?:یک|دو|سه|چهار|پنج|یه|\d+)\s+)', chunk)
-        for sub in sub_chunks:
-            sub = sub.strip()
-            if sub:
-                parsed = parse_single_item(sub)
-                items.append(parsed)
+
+        # «میخوام» separates dictated items. «و» still separates items even
+        # when the next one has no quantity.
+        for requested in _split_on_requests(chunk):
+            requested = _strip_list_fillers(requested)
+            if not requested:
+                continue
+            sub_chunks = re.split(rf"\s+و\s+(?=(?:{next_item}))", requested)
+            for sub in sub_chunks:
+                sub = _strip_list_fillers(sub)
+                if sub:
+                    items.append(parse_single_item(sub))
 
     return ParsedGroceryBasket(raw_input=raw_input, items=items, engine="rule_based")
 

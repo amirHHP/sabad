@@ -39,6 +39,43 @@ def test_parse_single_item():
     assert item3.unit == "لیتر"
 
 
+def test_dictated_mikham_list_keeps_every_item():
+    """A voice note that repeats «میخوام» is a list, not one sentence about milk."""
+    text = "خوب من پتی‌بور میخوام شیر میخوام خامه میخوام پنیر ماسکارپونه میخوام شکر میخوام پودر کاکائو میخوام"
+    basket = parse_grocery_input(text, use_llm=False)
+    assert [item.name for item in basket.items] == [
+        "پتی بور",
+        "شیر",
+        "خامه",
+        "پنیر ماسکارپونه",
+        "شکر",
+        "پودر کاکائو",
+    ]
+
+
+def test_mikham_with_half_space_and_plain_conjunction_still_split():
+    basket = parse_grocery_input("شیر می‌خوام خامه می‌خوام", use_llm=False)
+    assert [item.name for item in basket.items] == ["شیر", "خامه"]
+
+    joined = parse_grocery_input("پتیبور و شیر و پودر کاکائو", use_llm=False)
+    assert [item.name for item in joined.items] == ["پتی بور", "شیر", "پودر کاکائو"]
+
+
+def test_mikham_does_not_drop_quantity_brand_or_flavored_milk():
+    basket = parse_grocery_input("دو تا شیر پرچرب کاله یک لیتری میخوام", use_llm=False)
+    assert len(basket.items) == 1
+    item = basket.items[0]
+    assert item.name == "شیر"
+    assert item.brand == "کاله"
+    assert item.quantity == 2
+    assert item.volume_weight == 1.0
+    assert item.fat_percentage == 3.0
+
+    flavored = parse_single_item("شیر کاکائو کاله یک لیتری")
+    assert flavored.name == "شیر"
+    assert flavored.brand == "کاله"
+
+
 def test_parse_multi_item_basket():
     text = "دو تا شیر پرچرب کاله یک لیتری، یه پنیر ویلی ۳۵۰ گرمی، یه مایع ظرفشویی پریل ۴ لیتری"
     basket = parse_grocery_input(text)

@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 from rapidfuzz import fuzz
 from sabad.models.grocery import ParsedGroceryItem
 from sabad.models.catalog import StoreItem
+from sabad.normalizer.parser import fold_grocery_aliases
 from sabad.normalizer.persian_digits import clean_persian_text
 
 
@@ -165,6 +166,17 @@ def is_product_type_compatible(req_name: str, title: str) -> bool:
 
     req_clean = clean_persian_text(req_name)
     cand_clean = clean_persian_text(title)
+    folded_name = fold_grocery_aliases(req_name)
+    folded_title = fold_grocery_aliases(title)
+
+    # Petit beurre, mascarpone, and cocoa powder are easy to collapse into a
+    # nearby grocery item: any biscuit, plain cheese, or chocolate milk.
+    if "پتی بور" in folded_name and "پتی بور" not in folded_title:
+        return False
+    if "ماسکارپونه" in folded_name and "ماسکارپونه" not in folded_title:
+        return False
+    if folded_name == "پودر کاکائو" and ("شیر" in cand_clean or "کاکائو" not in cand_clean):
+        return False
 
     if "ظرفشویی" in req_clean:
         if any(w in cand_clean for w in ["دستشویی", "لباسشویی", "قرص ماشین"]):
@@ -306,8 +318,8 @@ def match_sku(query_item: ParsedGroceryItem, candidates: List[StoreItem]) -> Opt
             continue
 
         # 5. Fuzzy Title Matching
-        target_str = clean_persian_text(f"{query_item.name} {query_item.brand or ''}")
-        cand_str = clean_persian_text(f"{cand.title} {cand.brand or ''}")
+        target_str = fold_grocery_aliases(f"{query_item.name} {query_item.brand or ''}")
+        cand_str = fold_grocery_aliases(f"{cand.title} {cand.brand or ''}")
 
         sim_score = fuzz.token_set_ratio(target_str, cand_str) / 100.0
 
@@ -318,7 +330,7 @@ def match_sku(query_item: ParsedGroceryItem, candidates: List[StoreItem]) -> Opt
                 sim_score *= 0.6
 
         # 7. Core product noun verification
-        if query_item.name not in cand_str:
+        if fold_grocery_aliases(query_item.name) not in cand_str:
             sim_score *= 0.5
 
         if sim_score > best_score and sim_score >= 0.50:

@@ -50,6 +50,16 @@ def test_is_flavor_compatible():
     assert is_flavor_compatible("شیر موز", "شیر قهوه پگاه") is False
 
 
+def test_dictated_baking_items_do_not_match_nearby_products():
+    assert is_product_type_compatible("پتی بور", "بیسکویت پتی‌بور ویتانا") is True
+    assert is_product_type_compatible("پتی بور", "بیسکویت پتیبور") is True
+    assert is_product_type_compatible("پتی بور", "شیر پرچرب کاله") is False
+    assert is_product_type_compatible("پنیر ماسکارپونه", "پنیر ماسکارپونه کاله") is True
+    assert is_product_type_compatible("پنیر ماسکارپونه", "پنیر خامه‌ای کاله") is False
+    assert is_product_type_compatible("پودر کاکائو", "پودر کاکائو فرمند ۱۰۰ گرمی") is True
+    assert is_product_type_compatible("پودر کاکائو", "شیر کاکائو کاله ۱ لیتری") is False
+
+
 def test_is_product_type_compatible():
     assert is_product_type_compatible("مایع ظرفشویی", "مایع ظرفشویی پریل ۴ لیتری") is True
     assert is_product_type_compatible("مایع ظرفشویی", "مایع دستشویی صحت ۴ لیتری") is False
